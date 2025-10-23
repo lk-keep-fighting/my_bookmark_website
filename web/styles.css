@@ -1,0 +1,456 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7fb;
+  --fg: #1f2430;
+  --muted: #5c6370;
+  --accent: #4f46e5;
+  --accent-soft: rgba(79, 70, 229, 0.14);
+  --card-bg: #ffffff;
+  --border: rgba(31, 36, 48, 0.08);
+  --shadow: 0 8px 26px rgba(31, 36, 48, 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f131a;
+    --fg: #f5f7ff;
+    --muted: #9aa0b5;
+    --accent-soft: rgba(99, 102, 241, 0.25);
+    --card-bg: #161b24;
+    --border: rgba(255, 255, 255, 0.08);
+    --shadow: 0 14px 30px rgba(0, 0, 0, 0.26);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  font-family: "Inter", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: linear-gradient(180deg, var(--bg) 0%, #ffffff 100%);
+  color: var(--fg);
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  gap: 2.5rem;
+  padding: clamp(1.5rem, 2vw, 2.5rem);
+}
+
+.page-header {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  align-items: stretch;
+}
+
+.title-group h1 {
+  margin: 0;
+  font-size: clamp(1.8rem, 2.4vw, 2.5rem);
+  font-weight: 700;
+}
+
+.subtitle {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.search-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+  background: var(--card-bg);
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  padding: 0.25rem 0.35rem;
+  box-shadow: var(--shadow);
+  flex: 1 1 260px;
+  max-width: 32rem;
+}
+
+.search-box input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  padding: 0.6rem 1.2rem;
+  font-size: 0.95rem;
+  color: var(--fg);
+}
+
+.search-box input:focus {
+  outline: none;
+}
+
+.search-box button {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.2rem;
+  padding: 0 1rem;
+  cursor: pointer;
+}
+
+.search-box button:hover {
+  color: var(--accent);
+}
+
+.toolbar-actions {
+  display: flex;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+button {
+  cursor: pointer;
+  border-radius: 999px;
+  border: none;
+  padding: 0.6rem 1.3rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  background: var(--accent);
+  color: #fff;
+  box-shadow: var(--shadow);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 15px 28px rgba(79, 70, 229, 0.25);
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid rgba(79, 70, 229, 0.4);
+}
+
+button.secondary:hover {
+  background: var(--accent-soft);
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+main {
+  display: flex;
+  flex-direction: column;
+  gap: 1.8rem;
+  flex: 1;
+}
+
+.meta-info {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 1.1rem;
+  padding: 0.85rem 1.15rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  font-size: 0.9rem;
+  box-shadow: var(--shadow);
+}
+
+.meta-info span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.35rem 0.8rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.bookmarks-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1.4rem;
+}
+
+.folder-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 1.2rem;
+  padding: 1.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  box-shadow: var(--shadow);
+  min-height: 220px;
+}
+
+.folder-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.folder-header h2 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+.folder-actions {
+  display: inline-flex;
+  gap: 0.3rem;
+}
+
+.folder-actions button {
+  padding: 0.45rem 0.75rem;
+  font-size: 0.8rem;
+  border-radius: 0.85rem;
+}
+
+.folder-title {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.folder-header .folder-title {
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+.nested-folder-header .folder-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.folder-meta {
+  display: inline-flex;
+  gap: 0.4rem;
+  align-items: center;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.folder-meta span {
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(79, 70, 229, 0.12);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.folder-body,
+.nested-folder-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.nested-folder-body {
+  margin-top: 0.6rem;
+  padding-left: 0.25rem;
+}
+
+.folder-card.collapsed {
+  min-height: auto;
+}
+
+.folder-card.collapsed .folder-body {
+  display: none;
+}
+
+.nested-folder {
+  border-left: 2px solid rgba(79, 70, 229, 0.15);
+  border-radius: 1rem;
+  padding: 0.7rem 0.9rem 0.7rem 1.1rem;
+  margin-left: 0.3rem;
+  background: rgba(79, 70, 229, 0.05);
+}
+
+.nested-folder.collapsed .nested-folder-body {
+  display: none;
+}
+
+.nested-folder-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  font-weight: 600;
+}
+
+.nested-folder-header h2,
+.nested-folder-header h3,
+.nested-folder-header h4 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.nested-folder .folder-actions {
+  display: inline-flex;
+}
+
+.bookmark-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 0.85rem;
+  border: 1px solid transparent;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.bookmark-item:hover {
+  background: var(--accent-soft);
+  border-color: rgba(79, 70, 229, 0.25);
+}
+
+.bookmark-item a {
+  color: inherit;
+  text-decoration: none;
+  font-weight: 500;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bookmark-url {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: 0.35rem;
+  word-break: break-all;
+}
+
+.bookmark-actions {
+  display: inline-flex;
+  gap: 0.3rem;
+}
+
+.bookmark-actions button {
+  padding: 0.35rem 0.6rem;
+  font-size: 0.75rem;
+  border-radius: 0.75rem;
+}
+
+.bookmark-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.bookmark-description {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+  line-height: 1.3;
+}
+
+.bookmark-card {
+  min-height: auto;
+}
+
+.bookmark-card .bookmark-item {
+  padding: 0.75rem 0.5rem;
+}
+
+button.ghost {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  padding-inline: 0.75rem;
+  box-shadow: none;
+}
+
+button.ghost:hover {
+  color: var(--accent);
+  border-color: rgba(79, 70, 229, 0.2);
+  transform: none;
+  box-shadow: none;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 2rem;
+  transform: translateX(-50%) translateY(150%);
+  background: rgba(24, 24, 27, 0.92);
+  color: #fff;
+  padding: 0.65rem 1.4rem;
+  border-radius: 999px;
+  font-size: 0.9rem;
+  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.25);
+  transition: transform 0.25s ease;
+  z-index: 1000;
+}
+
+.toast.error {
+  background: rgba(220, 38, 38, 0.9);
+}
+
+.toast.visible {
+  transform: translateX(-50%) translateY(0);
+}
+
+.empty-state {
+  border: 1px dashed var(--border);
+  border-radius: 1rem;
+  padding: 1.5rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.page-footer {
+  font-size: 0.8rem;
+  color: var(--muted);
+  text-align: center;
+  padding-bottom: 1rem;
+}
+
+@media (max-width: 720px) {
+  .bookmarks-container {
+    grid-template-columns: 1fr;
+  }
+
+  button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .toolbar-actions {
+    width: 100%;
+  }
+
+  .toolbar-actions button {
+    flex: 1 1 auto;
+  }
+}

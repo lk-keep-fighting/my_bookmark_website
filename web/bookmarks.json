@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "generated_at": "2024-01-01T00:00:00+00:00",
+  "source": "sample-data",
+  "generator": "bookmarks_cli",
+  "statistics": {
+    "total_folders": 2,
+    "total_bookmarks": 4
+  },
+  "root": {
+    "type": "folder",
+    "name": "All bookmarks",
+    "id": "sample-root",
+    "children": [
+      {
+        "type": "folder",
+        "name": "常用工具",
+        "id": "sample-folder-1",
+        "children": [
+          {
+            "type": "bookmark",
+            "name": "GitHub",
+            "id": "sample-bm-1",
+            "url": "https://github.com"
+          },
+          {
+            "type": "bookmark",
+            "name": "Stack Overflow",
+            "id": "sample-bm-2",
+            "url": "https://stackoverflow.com"
+          }
+        ]
+      },
+      {
+        "type": "folder",
+        "name": "前端设计",
+        "id": "sample-folder-2",
+        "children": [
+          {
+            "type": "bookmark",
+            "name": "Dribbble",
+            "id": "sample-bm-3",
+            "url": "https://dribbble.com"
+          },
+          {
+            "type": "bookmark",
+            "name": "Awwwards",
+            "id": "sample-bm-4",
+            "url": "https://www.awwwards.com"
+          }
+        ]
+      }
+    ]
+  }
+}
