@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>本地书签导航站</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="page-header">
+      <div class="title-group">
+        <h1>本地书签导航站</h1>
+        <p class="subtitle">自动解析浏览器书签，构建可搜索、可编辑的导航站点。</p>
+      </div>
+      <div class="toolbar">
+        <label class="search-box">
+          <input
+            type="search"
+            id="search-input"
+            placeholder="搜索书签或目录名称"
+            autocomplete="off"
+          />
+          <button id="clear-search" type="button" title="清除搜索">×</button>
+        </label>
+        <div class="toolbar-actions">
+          <button id="reset-order" class="secondary" type="button">恢复初始排序</button>
+          <button id="copy-json" type="button">复制当前 JSON</button>
+          <button id="download-json" type="button">下载 JSON</button>
+        </div>
+      </div>
+      <p class="hint">提示：无搜索时可通过“↑ ↓”按钮调整目录/书签顺序，完成后复制或下载最新 JSON。</p>
+    </header>
+
+    <main>
+      <section id="meta-info" class="meta-info" aria-live="polite"></section>
+      <div id="bookmarks-container" class="bookmarks-container" aria-live="polite"></div>
+    </main>
+
+    <footer class="page-footer">
+      <p>
+        本项目支持自动解析本地浏览器书签，并生成可离线部署的导航页面。
+        将更新后的 <code>bookmarks.json</code> 覆盖网站同名文件即可完成导航站同步。
+      </p>
+    </footer>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>

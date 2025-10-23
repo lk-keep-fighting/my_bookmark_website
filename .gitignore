@@ -1,0 +1,25 @@
+# General
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+.env
+*.log
+
+# Node / Web
+node_modules/
+.npm/
+.cache/
+
+# Data
+/data/raw/
+/data/generated/
+/data/*.json
