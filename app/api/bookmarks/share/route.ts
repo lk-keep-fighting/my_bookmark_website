@@ -28,7 +28,7 @@ export async function POST(request: Request) {
     .from("bookmark_collections")
     .select("id")
     .eq("user_id", user.id)
-    .maybeSingle();
+    .maybeSingle<{ id: string }>();
 
   if (!existing) {
     return NextResponse.json({ error: "请先导入书签后再生成分享链接" }, { status: 400 });

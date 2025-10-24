@@ -1,4 +1,4 @@
-import { createBrowserClient } from "@supabase/auth-helpers-nextjs";
+import { createClient } from "@supabase/supabase-js";
 import type { Database } from "./types";
 
 export function createSupabaseBrowserClient() {
@@ -9,5 +9,5 @@ export function createSupabaseBrowserClient() {
     throw new Error("缺少 Supabase 浏览器端配置，请在环境变量中设置 NEXT_PUBLIC_SUPABASE_URL 与 NEXT_PUBLIC_SUPABASE_ANON_KEY。");
   }
 
-  return createBrowserClient<Database>(url, anonKey);
+  return createClient<Database>(url, anonKey);
 }

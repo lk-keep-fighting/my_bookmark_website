@@ -138,7 +138,7 @@ function Tree({ node, forceExpand }: { node: BookmarkNode; forceExpand: boolean 
   );
 }
 
-function countChildren(node: BookmarkNode) {
+function countChildren(node: BookmarkNode): { folders: number; bookmarks: number } {
   if (node.type === 'bookmark') {
     return { folders: 0, bookmarks: 1 };
   }

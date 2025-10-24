@@ -36,7 +36,7 @@ export async function POST(request: Request) {
     .from("bookmark_collections")
     .select("id, share_slug")
     .eq("user_id", user.id)
-    .maybeSingle();
+    .maybeSingle<{ id: string; share_slug: string | null }>();
 
   const shareSlug = existing?.share_slug ?? generateShareSlug();
   const now = new Date().toISOString();

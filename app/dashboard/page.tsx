@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { DashboardShell } from "@/components/dashboard-shell";
+import type { Database } from "@/lib/supabase/types";
 
 export default async function DashboardPage() {
   const supabase = createSupabaseServerClient();
@@ -16,7 +17,7 @@ export default async function DashboardPage() {
     .from("bookmark_collections")
     .select("data, share_slug, updated_at")
     .eq("user_id", user.id)
-    .maybeSingle();
+    .maybeSingle<Database["public"]["Tables"]["bookmark_collections"]["Row"]>();
 
   return (
     <DashboardShell
