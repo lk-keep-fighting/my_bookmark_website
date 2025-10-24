@@ -29,12 +29,29 @@
           <button id="download-json" type="button">下载 JSON</button>
         </div>
       </div>
-      <p class="hint">提示：无搜索时可通过“↑ ↓”按钮调整目录/书签顺序，完成后复制或下载最新 JSON。</p>
+      <p class="hint">提示：无搜索时可拖动右侧的网页列表调整顺序，完成后复制或下载最新 JSON。</p>
     </header>
 
     <main>
       <section id="meta-info" class="meta-info" aria-live="polite"></section>
-      <div id="bookmarks-container" class="bookmarks-container" aria-live="polite"></div>
+      <div class="workspace">
+        <aside class="tree-pane" aria-label="书签目录">
+          <header class="tree-pane-header">
+            <h2>目录</h2>
+          </header>
+          <div id="folder-tree" class="folder-tree" role="tree"></div>
+        </aside>
+        <section class="content-pane" aria-live="polite">
+          <header class="content-header">
+            <div class="content-heading">
+              <h2 id="content-title" class="content-title">请选择目录</h2>
+              <p id="content-path" class="content-path"></p>
+            </div>
+            <div id="content-meta" class="content-meta"></div>
+          </header>
+          <div id="bookmark-list" class="bookmark-list"></div>
+        </section>
+      </div>
     </main>
 
     <footer class="page-footer">
