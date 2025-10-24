@@ -1,13 +1,16 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import type { Database } from "./types";
 
 export function createSupabaseBrowserClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-  if (!url || !anonKey) {
+  if (!supabaseUrl || !supabaseKey) {
     throw new Error("缺少 Supabase 浏览器端配置，请在环境变量中设置 NEXT_PUBLIC_SUPABASE_URL 与 NEXT_PUBLIC_SUPABASE_ANON_KEY。");
   }
 
-  return createClient<Database>(url, anonKey);
+  return createClientComponentClient<Database>({
+    supabaseUrl,
+    supabaseKey,
+  });
 }
