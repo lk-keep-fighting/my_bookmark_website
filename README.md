@@ -1,122 +1,102 @@
-# 本地书签导航站
+# SaaS 书签导航平台
 
-一个用于解析本地浏览器书签并生成可搜索、可编辑导航站点的工具集。
+新版导航站支持在线注册登录、上传浏览器书签、生成专属导航站并通过分享链接公开访问。所有数据都会以 JSON 形式保存到 Supabase，确保安全可靠。
 
-功能概览：
+## 功能总览
 
-1. **获取书签数据**：支持一条命令从 Chromium 内核浏览器抓取书签文件，或将浏览器书签手动导出到项目目录。
-2. **解析与转换**：将浏览器书签（`Bookmarks` JSON 或 Netscape HTML 导出文件）转换为结构规整的 `bookmarks.json`。
-3. **生成网页导航**：基于 JSON 数据生成带搜索、高亮、顺序调整能力的本地网页导航站。
-4. **快速更新**：在网页中调整目录/书签顺序后，可复制或下载新的 JSON 文件，一键覆盖旧数据完成导航站更新。
+- 🔐 **用户认证**：基于 Supabase Auth，支持邮箱注册和密码登录。
+- 📥 **书签导入**：在仪表盘上传浏览器导出的 HTML 书签（Netscape 格式），自动解析为规范 JSON。
+- 💾 **云端存储**：解析后的书签树以 JSON 存储在 Supabase `bookmark_collections` 表中。
+- 🌐 **导航分享**：为每位用户生成唯一的 `/share/<slug>` 链接，外部访客可直接访问最新导航站。
+- 🔍 **导航体验**：提供目录树与搜索功能，实时预览及分享页使用同一套 UI 组件。
+
+## 技术栈
+
+- [Next.js 14](https://nextjs.org/)（App Router + TypeScript）
+- [React 18](https://react.dev/)
+- [Supabase](https://supabase.com/) JavaScript SDK（Auth & Database）
+- [htmlparser2](https://github.com/fb55/htmlparser2)（解析 Netscape Bookmark HTML）
 
 ## 快速开始
 
-确保本地已安装 **Python 3.8+**。
-
-```bash
-cd /path/to/my_bookmark_website
-python3 scripts/bookmarks_cli.py --help
-```
-
-```
-usage: bookmarks_cli.py [-h] {gather,convert,build-site} ...
-
-Parse browser bookmarks and generate a searchable navigation site.
-
-positional arguments:
-  {gather,convert,build-site}
-    gather              Locate and copy a Chromium-based browser's bookmark database
-    convert             Convert an exported bookmark file into the canonical JSON format
-    build-site          Generate / refresh the static navigation site using the provided bookmark file
-```
-
-## 1. 获取浏览器书签
-
-### 方案 A：一键复制浏览器书签数据库
-
-目前支持 Chromium 内核浏览器（Chrome / Chromium / Edge / Brave / Vivaldi）。
-
-```bash
-# 以 Chrome 默认用户为例
-python3 scripts/bookmarks_cli.py gather chrome
-
-# 指定非默认 Profile，例如 "Profile 2"
-python3 scripts/bookmarks_cli.py gather chrome --profile "Profile 2"
-```
-
-命令会自动将浏览器 `Bookmarks` 文件复制到 `data/raw/` 目录中。
-
-### 方案 B：手动导出书签
-
-在浏览器中导出书签为 HTML 文件，并放置到项目的 `data/` 目录，例如 `data/bookmarks.html`。
-
-## 2. 解析并生成标准 JSON
-
-```bash
-python3 scripts/bookmarks_cli.py convert data/bookmarks.html --output data/bookmarks.json
-```
-
-- 输入文件既可以是浏览器原生的 `Bookmarks` JSON，也可以是 HTML 导出文件。
-- 也支持将先前生成的 `bookmarks.json` 作为输入，便于在原有数据基础上继续调整。
-- 输出的 `bookmarks.json` 为本项目统一的数据结构，`web/` 目录下已附带示例。
-
-若希望同时刷新静态站点，可直接指定 `--site-dir`（默认使用仓库的 `web/` 模板）：
-
-```bash
-python3 scripts/bookmarks_cli.py convert data/bookmarks.html --site-dir dist
-```
-
-执行后会在 `dist/` 目录写入：
-
-- `index.html`、`app.js`、`styles.css` 等静态资源
-- 最新的 `bookmarks.json`
-
-## 3. 预览与部署导航站
-
-1. 使用任意静态资源服务器打开 `dist/` 或 `web/` 目录，例如：
+1. 安装依赖
    ```bash
-   python3 -m http.server --directory dist 5173
+   npm install
    ```
-2. 浏览器访问 `http://localhost:5173` 即可预览导航站。
 
-导航站特性：
+2. 配置环境变量：在项目根目录创建 `.env.local`，内容示例：
+   ```bash
+   NEXT_PUBLIC_SUPABASE_URL=https://<your-project>.supabase.co
+   NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon-key>
+   SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
+   ```
 
-- 顶部搜索框支持按名称／链接模糊匹配
-- 支持折叠目录、统计目录与书签数量
-- 在无搜索时可使用每项右侧的“↑/↓”按钮调整顺序
-- 右上角提供“恢复初始排序”、“复制 JSON”、“下载 JSON”操作
+   - `NEXT_PUBLIC_SUPABASE_URL` 与 `NEXT_PUBLIC_SUPABASE_ANON_KEY` 会在浏览器端使用。
+   - `SUPABASE_SERVICE_ROLE_KEY` 仅在服务端 API 中使用，用于写入/读取受 RLS 保护的数据。
 
-完成调整后，可直接复制或下载新的 `bookmarks.json`，覆盖原目录下同名文件即可完成部署更新。
+3. 初始化数据库表（SQL 示例）
+   ```sql
+   create table if not exists public.bookmark_collections (
+     id uuid primary key default gen_random_uuid(),
+     user_id uuid not null references auth.users (id) on delete cascade,
+     data jsonb not null,
+     share_slug text unique not null,
+     title text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   );
+
+   create unique index if not exists bookmark_collections_user_id_idx
+     on public.bookmark_collections (user_id);
+
+   -- RLS 策略
+   alter table public.bookmark_collections enable row level security;
+
+   create policy "Users can manage their own bookmarks" on public.bookmark_collections
+     for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+   ```
+
+4. 本地运行
+   ```bash
+   npm run dev
+   ```
+   打开浏览器访问 `http://localhost:3000`。
+
+## 使用流程
+
+1. 注册并登录账号。
+2. 在仪表盘上传浏览器导出的书签 HTML 文件（Chrome/Edge/Brave 等均为 Netscape 格式）。
+3. 系统会解析书签树、保存至 Supabase，并生成分享链接。
+4. 复制分享链接（`/share/<slug>`）即可让他人直接浏览你的导航站。
+5. 如需刷新分享令牌，可在仪表盘点击“重新生成”。
 
 ## 目录结构
 
 ```
 .
-├── scripts/
-│   └── bookmarks_cli.py      # 主命令行工具
-├── web/
-│   ├── index.html            # 导航站模板（附示例数据）
-│   ├── styles.css
-│   ├── app.js
-│   └── bookmarks.json        # 示例书签数据
-├── data/                     # 建议存放书签源文件与输出 JSON
+├── app/                      # Next.js App Router 页面 & API
+│   ├── (auth)/               # 登录 / 注册页面
+│   ├── api/                  # 书签导入 & 分享 API 路由
+│   ├── dashboard/            # 受保护的用户仪表盘
+│   ├── share/[slug]/         # 公开分享页
+│   └── page.tsx              # 登陆页入口
+├── components/               # 前端 UI 组件
+├── lib/                      # 书签解析、Supabase 客户端、工具函数
+├── scripts/                  # 旧版 CLI 工具（仍可单独使用）
+├── web/                      # 旧版静态模板（保留供参考）
+├── package.json
 └── README.md
 ```
 
+> 注：仓库中保留了早期的 Python CLI 和静态模板，若需要纯离线使用仍可执行 `python3 scripts/bookmarks_cli.py` 相关命令。
+
 ## 常见问题
 
-- **执行 `gather` 时提示文件不存在？**
-  - 请确认浏览器已完全退出，并核对 `--profile` 名称是否正确（如 `Default`、`Profile 1`）。
-  - 若仍无法定位，可改用手动导出书签的方式。
-
-- **如何支持其他浏览器？**
-  - 若浏览器支持导出为 HTML，直接放入 `convert` 命令即可。
-  - 若为其他数据格式，可自行在 `scripts/bookmarks_cli.py` 中补充解析逻辑。
-
-- **如何在网页中看到最新数据？**
-  - 重新执行 `convert --site-dir` 命令，或手动替换运行目录下的 `bookmarks.json`。
-
-- **导航页可以部署在哪里？**
-  - 所有资源均为纯静态文件，可直接部署到任意静态托管平台（GitHub Pages、Vercel、Netlify 等）。
+- **上传书签时报错 “书签解析失败”？**
+  - 请确认文件为浏览器导出的 HTML 格式，且未被其它编辑器转换编码。
+- **分享页访问 404？**
+  - 确认已完成首次书签导入；若仍无效，可在仪表盘使用“重新生成”刷新分享链接。
+- **想要扩展数据结构？**
+  - `lib/bookmarks/types.ts` 中定义了书签的类型，可在此基础上添加字段并同步更新 Supabase 表结构及 RLS 策略。
 
 祝使用愉快 🎉
