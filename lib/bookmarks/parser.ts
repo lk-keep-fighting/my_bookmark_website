@@ -1,6 +1,7 @@
 import { Parser } from "htmlparser2";
 import { randomUUID } from "node:crypto";
 import { BookmarkDocument, BookmarkNode } from "./types";
+import { calculateBookmarkStatistics } from "./statistics";
 
 type CurrentTarget =
   | {
@@ -141,7 +142,7 @@ export function parseBookmarksHtml(html: string, source = "import"): BookmarkDoc
   parser.write(html);
   parser.end();
 
-  const statistics = calculateStatistics(root);
+  const statistics = calculateBookmarkStatistics(root);
 
   return {
     version: 1,
@@ -151,30 +152,4 @@ export function parseBookmarksHtml(html: string, source = "import"): BookmarkDoc
     statistics,
     root,
   };
-}
-
-function calculateStatistics(root: BookmarkNode) {
-  const counts = walk(root);
-  return {
-    total_folders: Math.max(counts.folders - 1, 0),
-    total_bookmarks: counts.bookmarks,
-  };
-}
-
-function walk(node: BookmarkNode): { folders: number; bookmarks: number } {
-  if (node.type === "bookmark") {
-    return { folders: 0, bookmarks: 1 };
-  }
-
-  const children = node.children ?? [];
-  return children.reduce(
-    (acc, child) => {
-      const childCounts = walk(child);
-      return {
-        folders: acc.folders + childCounts.folders + (child.type === "folder" ? 1 : 0),
-        bookmarks: acc.bookmarks + childCounts.bookmarks,
-      };
-    },
-    { folders: 1, bookmarks: 0 },
-  );
 }
