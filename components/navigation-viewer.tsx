@@ -746,7 +746,7 @@ function createNavigationIndex(root: BookmarkNode): NavigationIndex {
     for (const child of children) {
       if (child.type === 'bookmark') {
         bookmarkMatches.push({
-          node: child,
+          node: child as BookmarkNode & { type: 'bookmark' },
           parentFolderId: node.id,
           trail: currentTrail,
           pathLabel: currentTrail.map((folder) => folder.name).join(' / '),
@@ -1008,9 +1008,9 @@ function createSemanticGroupingFolder(matches: BookmarkMatch[]): BookmarkNode | 
       type: 'folder' as const,
       id: generateNodeId(),
       name: category.name,
-      children: items.slice().sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')),
+      children: items.slice().sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')) as BookmarkNode[],
     };
-  }).filter((item): item is BookmarkNode => Boolean(item));
+  }).filter((item): item is BookmarkNode & { type: 'folder'; children: BookmarkNode[] } => Boolean(item));
 
   const remaining = buckets.get('其他收藏') ?? [];
   if (remaining.length > 0) {

@@ -1,5 +1,5 @@
 import { Parser } from "htmlparser2";
-import { randomUUID } from "node:crypto";
+import { customAlphabet } from "nanoid";
 import { BookmarkDocument, BookmarkNode } from "./types";
 import { calculateBookmarkStatistics } from "./statistics";
 
@@ -14,13 +14,15 @@ type CurrentTarget =
     }
   | null;
 
+
 const GENERATOR = "bookmark-saas";
+const uuidNanoid = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 24);
 
 export function parseBookmarksHtml(html: string, source = "import"): BookmarkDocument {
   const root: BookmarkNode = {
     type: "folder",
     name: "All bookmarks",
-    id: randomUUID().replace(/-/g, ""),
+    id: uuidNanoid(),
     children: [],
   };
 
@@ -61,7 +63,7 @@ export function parseBookmarksHtml(html: string, source = "import"): BookmarkDoc
           pendingFolder = {
             type: "folder",
             name: "",
-            id: randomUUID().replace(/-/g, ""),
+            id: uuidNanoid(),
             children: [],
             add_date: attrs["add_date"],
             last_modified: attrs["last_modified"],
@@ -77,7 +79,7 @@ export function parseBookmarksHtml(html: string, source = "import"): BookmarkDoc
           const bookmark: BookmarkNode = {
             type: "bookmark",
             name: "",
-            id: randomUUID().replace(/-/g, ""),
+            id: uuidNanoid(),
             url: attrs["href"] ?? "",
             add_date: attrs["add_date"],
             last_modified: attrs["last_modified"],
