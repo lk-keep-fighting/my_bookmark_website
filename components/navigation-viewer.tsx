@@ -57,26 +57,14 @@ export function NavigationViewer({
     setDraggingId(null);
     setDragOverId(null);
   }, [selectedFolderId]);
-
-  if (!document) {
-    return (
-      <div style={emptyContainerStyle}>
-        <p style={emptyHintStyle}>{emptyHint ?? '暂未导入书签，上传 HTML 文件后即可预览导航站。'}</p>
-      </div>
-    );
-  }
-
-  const activeFolderId = selectedFolderId ?? folderEntries[0]?.id ?? document.root.id;
-  const activeFolderNode = findFolderById(document.root, activeFolderId) ?? document.root;
-  const activeFolderMeta = folderEntries.find((entry) => entry.id === activeFolderId) ?? {
-    id: document.root.id,
-    name: document.root.name,
-    depth: 0,
-    pathLabel: document.root.name,
-    directBookmarkCount: activeFolderNode.children?.filter((child) => child.type === 'bookmark').length ?? 0,
-  };
+  // 为了遵守 React Hooks 的调用顺序，下面的 useMemo 与相关变量
+  // 必须在所有早期返回之前一致地被调用。即使 document 为 null，
+  // 我们也返回安全的默认值。
+  const activeFolderId = document ? selectedFolderId ?? folderEntries[0]?.id ?? document.root.id : null;
+  const activeFolderNode = document && activeFolderId ? findFolderById(document.root, activeFolderId) ?? document.root : null;
 
   const bookmarkChildren = useMemo(() => {
+    if (!activeFolderNode) return [] as (BookmarkNode & { type: 'bookmark' })[];
     return (activeFolderNode.children ?? []).filter((child) => child.type === 'bookmark');
   }, [activeFolderNode]);
 
@@ -90,10 +78,27 @@ export function NavigationViewer({
     });
   }, [bookmarkChildren, query]);
 
+  if (!document) {
+    return (
+      <div style={emptyContainerStyle}>
+        <p style={emptyHintStyle}>{emptyHint ?? '暂未导入书签，上传 HTML 文件后即可预览导航站。'}</p>
+      </div>
+    );
+  }
+
+  const activeFolderMeta = folderEntries.find((entry) => entry.id === (activeFolderId ?? document.root.id)) ?? {
+    id: document.root.id,
+    name: document.root.name,
+    depth: 0,
+    pathLabel: document.root.name,
+    directBookmarkCount: activeFolderNode?.children?.filter((child) => child.type === 'bookmark').length ?? 0,
+  };
+
   const canReorder = editable && query.trim().length === 0 && bookmarkChildren.length > 1;
 
   const handleDrop = (targetBookmarkId: string | null) => (event: React.DragEvent<HTMLDivElement>) => {
     if (!canReorder) return;
+    if (!activeFolderId) return;
     event.preventDefault();
     event.stopPropagation();
     const sourceId = event.dataTransfer.getData('text/plain');
