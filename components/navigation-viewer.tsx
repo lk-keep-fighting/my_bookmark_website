@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type React from 'react';
 import type { BookmarkDocument, BookmarkNode } from '@/lib/bookmarks';
+import { bookmarkDocumentToHtml, calculateBookmarkStatistics } from '@/lib/bookmarks';
 
 interface NavigationViewerProps {
   document: BookmarkDocument | null;
@@ -12,73 +13,381 @@ interface NavigationViewerProps {
   onDocumentChange?: (nextDocument: BookmarkDocument) => void;
 }
 
+type FolderTrailItem = {
+  id: string;
+  name: string;
+};
+
 type FolderEntry = {
   id: string;
   name: string;
   depth: number;
   pathLabel: string;
   directBookmarkCount: number;
+  trail: FolderTrailItem[];
 };
 
+interface NavigationIndex {
+  folderEntries: FolderEntry[];
+  bookmarkMatches: BookmarkMatch[];
+  folderTrailMap: Map<string, FolderTrailItem[]>;
+}
+
+type BookmarkMatch = {
+  node: BookmarkNode & { type: 'bookmark' };
+  parentFolderId: string;
+  trail: FolderTrailItem[];
+  pathLabel: string;
+  lowerCaseName: string;
+  lowerCaseUrl: string;
+};
+
+type BookmarkCardData = {
+  node: BookmarkNode & { type: 'bookmark' };
+  parentFolderId: string;
+  trail: FolderTrailItem[];
+  pathLabel: string;
+  isSearchResult: boolean;
+};
+
+type AiStrategyId = 'domain-groups' | 'semantic-clusters' | 'alphabetical';
+
+const AI_STRATEGIES: Array<{ id: AiStrategyId; title: string; description: string }> = [
+  {
+    id: 'domain-groups',
+    title: '域名智能分组',
+    description: '按网站域名自动归类，并补全更易读的名称',
+  },
+  {
+    id: 'semantic-clusters',
+    title: '语义主题整理',
+    description: '依据常见用途划分到社交、效率、开发等类别',
+  },
+  {
+    id: 'alphabetical',
+    title: '字母顺序索引',
+    description: '以名称首字母生成快速导航目录',
+  },
+];
+
+const EMPTY_INDEX: NavigationIndex = {
+  folderEntries: [],
+  bookmarkMatches: [],
+  folderTrailMap: new Map(),
+};
+
+interface SearchResult {
+  matches: BookmarkMatch[];
+  matchesByFolder: Map<string, BookmarkMatch[]>;
+}
+
 export function NavigationViewer({
-  document,
+  document: bookmarkDocument,
   emptyHint,
   header,
   editable = false,
   onDocumentChange,
 }: NavigationViewerProps) {
-  const folderEntries = useMemo<FolderEntry[]>(() => {
-    if (!document) return [];
-    return collectFolders(document.root);
-  }, [document]);
+  const navigationIndex = useMemo<NavigationIndex>(() => {
+    if (!bookmarkDocument) {
+      return EMPTY_INDEX;
+    }
+    return createNavigationIndex(bookmarkDocument.root);
+  }, [bookmarkDocument]);
+
+  const { folderEntries, bookmarkMatches, folderTrailMap } = navigationIndex;
 
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [editingBookmarkId, setEditingBookmarkId] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState('');
+  const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
+  const [isApplyingAi, setIsApplyingAi] = useState(false);
+  const [aiMessage, setAiMessage] = useState<string | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
+
+  const trimmedQuery = query.trim();
+  const normalizedQuery = trimmedQuery.toLowerCase();
+  const searchActive = normalizedQuery.length > 0;
+
+  const searchResult = useMemo<SearchResult | null>(() => {
+    if (!searchActive) {
+      return null;
+    }
+    const matches: BookmarkMatch[] = [];
+    const matchesByFolder = new Map<string, BookmarkMatch[]>();
+
+    for (const match of bookmarkMatches) {
+      if (match.lowerCaseName.includes(normalizedQuery) || match.lowerCaseUrl.includes(normalizedQuery)) {
+        matches.push(match);
+        for (const folder of match.trail) {
+          let bucket = matchesByFolder.get(folder.id);
+          if (!bucket) {
+            bucket = [];
+            matchesByFolder.set(folder.id, bucket);
+          }
+          bucket.push(match);
+        }
+      }
+    }
+
+    return { matches, matchesByFolder };
+  }, [bookmarkMatches, normalizedQuery, searchActive]);
+
+  const visibleFolderEntries = useMemo(() => {
+    if (!searchActive) {
+      return folderEntries;
+    }
+    return folderEntries.filter((entry) => (searchResult?.matchesByFolder.get(entry.id)?.length ?? 0) > 0);
+  }, [folderEntries, searchActive, searchResult]);
 
   useEffect(() => {
-    if (!document) {
-      setSelectedFolderId(null);
-      setQuery('');
-      return;
-    }
-    if (folderEntries.length === 0) {
+    if (!bookmarkDocument) {
       setSelectedFolderId(null);
       return;
     }
-    if (!selectedFolderId || !folderEntries.some((entry) => entry.id === selectedFolderId)) {
-      setSelectedFolderId(folderEntries[0].id);
+    const availableEntries = searchActive ? visibleFolderEntries : folderEntries;
+    if (availableEntries.length === 0) {
+      setSelectedFolderId(null);
+      return;
     }
-  }, [document, folderEntries, selectedFolderId]);
+    if (!selectedFolderId || !availableEntries.some((entry) => entry.id === selectedFolderId)) {
+      setSelectedFolderId(availableEntries[0].id);
+    }
+  }, [bookmarkDocument, folderEntries, visibleFolderEntries, searchActive, selectedFolderId]);
 
   useEffect(() => {
-    setQuery('');
     setDraggingId(null);
     setDragOverId(null);
-  }, [selectedFolderId]);
-  // 为了遵守 React Hooks 的调用顺序，下面的 useMemo 与相关变量
-  // 必须在所有早期返回之前一致地被调用。即使 document 为 null，
-  // 我们也返回安全的默认值。
-  const activeFolderId = document ? selectedFolderId ?? folderEntries[0]?.id ?? document.root.id : null;
-  const activeFolderNode = document && activeFolderId ? findFolderById(document.root, activeFolderId) ?? document.root : null;
+  }, [selectedFolderId, searchActive]);
+
+  useEffect(() => {
+    if (!aiMessage || typeof window === 'undefined') return;
+    const timer = window.setTimeout(() => setAiMessage(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [aiMessage]);
+
+  useEffect(() => {
+    if (!aiError || typeof window === 'undefined') return;
+    const timer = window.setTimeout(() => setAiError(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [aiError]);
+
+  const activeFolderId = useMemo(() => {
+    if (!bookmarkDocument) {
+      return null;
+    }
+    if (searchActive) {
+      if (visibleFolderEntries.length === 0) {
+        return null;
+      }
+      return selectedFolderId ?? visibleFolderEntries[0]?.id ?? null;
+    }
+    if (folderEntries.length === 0) {
+      return null;
+    }
+    return selectedFolderId ?? folderEntries[0]?.id ?? null;
+  }, [bookmarkDocument, searchActive, visibleFolderEntries, selectedFolderId, folderEntries]);
+
+  const activeFolderEntry = useMemo(() => {
+    if (!activeFolderId) return null;
+    return folderEntries.find((entry) => entry.id === activeFolderId) ?? null;
+  }, [activeFolderId, folderEntries]);
+
+  const activeFolderNode = useMemo(() => {
+    if (!bookmarkDocument || !activeFolderId) {
+      return null;
+    }
+    return findFolderById(bookmarkDocument.root, activeFolderId);
+  }, [bookmarkDocument, activeFolderId]);
 
   const bookmarkChildren = useMemo(() => {
     if (!activeFolderNode) return [] as (BookmarkNode & { type: 'bookmark' })[];
-    return (activeFolderNode.children ?? []).filter((child) => child.type === 'bookmark');
+    return (activeFolderNode.children ?? []).filter(
+      (child): child is BookmarkNode & { type: 'bookmark' } => child.type === 'bookmark',
+    );
   }, [activeFolderNode]);
 
-  const filteredBookmarks = useMemo(() => {
-    const trimmed = query.trim().toLowerCase();
-    if (!trimmed) return bookmarkChildren;
-    return bookmarkChildren.filter((bookmark) => {
-      const name = bookmark.name.toLowerCase();
-      const url = (bookmark.url ?? '').toLowerCase();
-      return name.includes(trimmed) || url.includes(trimmed);
-    });
-  }, [bookmarkChildren, query]);
+  const bookmarkCards = useMemo<BookmarkCardData[]>(() => {
+    if (!bookmarkDocument || !activeFolderId) {
+      return [];
+    }
+    if (searchActive) {
+      const matches = searchResult?.matchesByFolder.get(activeFolderId);
+      if (!matches || matches.length === 0) {
+        return [];
+      }
+      return matches.map((match) => ({
+        node: match.node,
+        parentFolderId: match.parentFolderId,
+        trail: match.trail,
+        pathLabel: match.pathLabel,
+        isSearchResult: true,
+      }));
+    }
+    const trail = folderTrailMap.get(activeFolderId) ?? [];
+    const pathLabel = trail.map((item) => item.name).join(' / ');
+    return bookmarkChildren.map((bookmark) => ({
+      node: bookmark,
+      parentFolderId: activeFolderId,
+      trail,
+      pathLabel,
+      isSearchResult: false,
+    }));
+  }, [bookmarkDocument, activeFolderId, searchActive, searchResult, folderTrailMap, bookmarkChildren]);
 
-  if (!document) {
+  const activeFolderBookmarkCount = searchActive
+    ? activeFolderId
+      ? searchResult?.matchesByFolder.get(activeFolderId)?.length ?? 0
+      : 0
+    : bookmarkChildren.length;
+
+  const totalSearchMatches = searchActive ? searchResult?.matches.length ?? 0 : 0;
+
+  const canReorder = editable && !searchActive && bookmarkChildren.length > 1;
+
+  const handleDrop = useCallback(
+    (targetBookmarkId: string | null) => (event: React.DragEvent<HTMLDivElement>) => {
+      if (!canReorder || !bookmarkDocument || !activeFolderId) return;
+      event.preventDefault();
+      event.stopPropagation();
+
+      const sourceId = event.dataTransfer.getData('text/plain');
+      if (!sourceId) return;
+
+      const allIds = bookmarkChildren.map((bookmark) => bookmark.id);
+      const sourceIndex = allIds.indexOf(sourceId);
+      if (sourceIndex === -1) return;
+
+      let targetIndex = targetBookmarkId ? allIds.indexOf(targetBookmarkId) : bookmarkChildren.length;
+      if (targetIndex === -1) {
+        targetIndex = bookmarkChildren.length;
+      }
+
+      if (sourceIndex === targetIndex) {
+        setDraggingId(null);
+        setDragOverId(null);
+        return;
+      }
+
+      const nextDocument = reorderDocument(bookmarkDocument, activeFolderId, sourceId, targetIndex);
+      if (onDocumentChange && nextDocument !== bookmarkDocument) {
+        onDocumentChange(nextDocument);
+      }
+
+      setDraggingId(null);
+      setDragOverId(null);
+    },
+    [canReorder, bookmarkDocument, activeFolderId, bookmarkChildren, onDocumentChange],
+  );
+
+  const handleStartEditing = useCallback((bookmarkId: string, currentName: string) => {
+    setEditingBookmarkId(bookmarkId);
+    setEditingValue(currentName);
+  }, []);
+
+  const handleCancelEditing = useCallback(() => {
+    setEditingBookmarkId(null);
+    setEditingValue('');
+  }, []);
+
+  const handleCommitEditing = useCallback(
+    (bookmarkId: string, nextValue: string) => {
+      if (!editable || !bookmarkDocument || !onDocumentChange) {
+        setEditingBookmarkId(null);
+        setEditingValue('');
+        return;
+      }
+      const trimmed = nextValue.trim();
+      const originalName = bookmarkMatches.find((match) => match.node.id === bookmarkId)?.node.name ?? '';
+      if (!trimmed) {
+        setEditingBookmarkId(null);
+        setEditingValue('');
+        return;
+      }
+      if (trimmed === originalName) {
+        setEditingBookmarkId(null);
+        setEditingValue('');
+        return;
+      }
+      const nextDocument = renameBookmarkInDocument(bookmarkDocument, bookmarkId, trimmed);
+      if (nextDocument !== bookmarkDocument) {
+        onDocumentChange(nextDocument);
+      }
+      setEditingBookmarkId(null);
+      setEditingValue('');
+    },
+    [editable, bookmarkDocument, onDocumentChange, bookmarkMatches],
+  );
+
+  const handleExportBookmarks = useCallback(() => {
+    if (typeof window === 'undefined' || !bookmarkDocument) return;
+    try {
+      const html = bookmarkDocumentToHtml(bookmarkDocument);
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+      const url = window.URL.createObjectURL(blob);
+      const anchor = window.document.createElement('a');
+      const baseName = (bookmarkDocument.root.name || 'bookmarks').trim() || 'bookmarks';
+      const timestamp = new Date();
+      const formattedDate = `${timestamp.getFullYear()}-${String(timestamp.getMonth() + 1).padStart(2, '0')}-${String(
+        timestamp.getDate(),
+      ).padStart(2, '0')}`;
+      anchor.href = url;
+      anchor.download = `${baseName}-${formattedDate}.html`;
+      anchor.rel = 'noopener';
+      window.document.body.appendChild(anchor);
+      anchor.click();
+      window.document.body.removeChild(anchor);
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('导出书签失败', error);
+    }
+  }, [bookmarkDocument]);
+
+  const handleApplyAiStrategy = useCallback(
+    (strategyId: AiStrategyId) => {
+      if (!editable || !bookmarkDocument || !onDocumentChange) return;
+      if (bookmarkMatches.length === 0) {
+        setAiError('当前书签为空，无法执行自动整理');
+        return;
+      }
+      setIsApplyingAi(true);
+      setAiError(null);
+      setAiMessage(null);
+      try {
+        const newFolder = createAiOrganizedFolder(strategyId, bookmarkMatches);
+        if (!newFolder) {
+          throw new Error('未能生成新的书签分类，请稍后再试');
+        }
+        const nextRootChildren = [...(bookmarkDocument.root.children ?? []), newFolder];
+        const nextRoot: BookmarkNode = {
+          ...bookmarkDocument.root,
+          children: nextRootChildren,
+        };
+        const nextDocument: BookmarkDocument = {
+          ...bookmarkDocument,
+          root: nextRoot,
+          statistics: calculateBookmarkStatistics(nextRoot),
+        };
+        onDocumentChange(nextDocument);
+        setAiMessage(`已生成「${newFolder.name}」分类，原有书签保持不变。`);
+        setSelectedFolderId(newFolder.id);
+        if (searchActive) {
+          setQuery('');
+        }
+        setIsAiPanelOpen(false);
+      } catch (error) {
+        setAiError(error instanceof Error ? error.message : '自动整理失败，请稍后再试');
+      } finally {
+        setIsApplyingAi(false);
+      }
+    },
+    [editable, bookmarkDocument, onDocumentChange, bookmarkMatches, searchActive],
+  );
+
+  if (!bookmarkDocument) {
     return (
       <div style={emptyContainerStyle}>
         <p style={emptyHintStyle}>{emptyHint ?? '暂未导入书签，上传 HTML 文件后即可预览导航站。'}</p>
@@ -86,48 +395,17 @@ export function NavigationViewer({
     );
   }
 
-  const activeFolderMeta = folderEntries.find((entry) => entry.id === (activeFolderId ?? document.root.id)) ?? {
-    id: document.root.id,
-    name: document.root.name,
-    depth: 0,
-    pathLabel: document.root.name,
-    directBookmarkCount: activeFolderNode?.children?.filter((child) => child.type === 'bookmark').length ?? 0,
-  };
+  const sidebarDisplayEntries = visibleFolderEntries;
+  const activeFolderName = activeFolderEntry?.name ?? (searchActive ? '未匹配目录' : bookmarkDocument.root.name);
+  const activeFolderPathLabel = activeFolderEntry?.pathLabel ?? '';
 
-  const canReorder = editable && query.trim().length === 0 && bookmarkChildren.length > 1;
-
-  const handleDrop = (targetBookmarkId: string | null) => (event: React.DragEvent<HTMLDivElement>) => {
-    if (!canReorder) return;
-    if (!activeFolderId) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const sourceId = event.dataTransfer.getData('text/plain');
-    if (!sourceId) return;
-
-    const allIds = bookmarkChildren.map((bookmark) => bookmark.id);
-    const sourceIndex = allIds.indexOf(sourceId);
-    if (sourceIndex === -1) return;
-
-    let targetIndex = targetBookmarkId ? allIds.indexOf(targetBookmarkId) : bookmarkChildren.length;
-    if (targetIndex === -1) {
-      targetIndex = bookmarkChildren.length;
-    }
-
-    if (sourceIndex === targetIndex || sourceIndex + 1 === targetIndex) {
-      // Dropping in the same position
-      setDraggingId(null);
-      setDragOverId(null);
-      return;
-    }
-
-    const nextDocument = reorderDocument(document, activeFolderId, sourceId, targetIndex);
-    if (onDocumentChange && nextDocument !== document) {
-      onDocumentChange(nextDocument);
-    }
-
-    setDraggingId(null);
-    setDragOverId(null);
-  };
+  const emptyMessage = searchActive
+    ? trimmedQuery
+      ? `未找到与“${trimmedQuery}”匹配的网页`
+      : '未找到匹配的网页'
+    : bookmarkChildren.length === 0
+      ? '该目录暂无网页，可选择其他目录或重新导入书签。'
+      : '暂无可展示的网页。';
 
   return (
     <div style={outerWrapperStyle}>
@@ -135,129 +413,267 @@ export function NavigationViewer({
         <aside style={sidebarStyle}>
           <div style={sidebarHeaderStyle}>
             <span style={sidebarBadgeStyle}>书签目录</span>
-            <h2 style={sidebarTitleStyle}>{document.root.name}</h2>
+            <h2 style={sidebarTitleStyle}>{bookmarkDocument.root.name}</h2>
             <p style={sidebarSubtitleStyle}>
-              共 {document.statistics.total_folders} 个目录 · {document.statistics.total_bookmarks} 个网页
+              共 {bookmarkDocument.statistics.total_folders} 个目录 · {bookmarkDocument.statistics.total_bookmarks} 个网页
             </p>
+            {searchActive && (
+              <span style={sidebarSearchInfoStyle}>搜索结果覆盖 {sidebarDisplayEntries.length} 个目录</span>
+            )}
           </div>
           <div style={sidebarListStyle}>
-            {folderEntries.map((entry) => {
-              const isActive = entry.id === activeFolderId;
-              return (
-                <button
-                  key={entry.id}
-                  type="button"
-                  onClick={() => setSelectedFolderId(entry.id)}
-                  style={{
-                    ...folderButtonStyle,
-                    paddingLeft: `${16 + entry.depth * 18}px`,
-                    border: isActive ? '1px solid rgba(59, 130, 246, 0.55)' : '1px solid transparent',
-                    background: isActive ? 'rgba(59, 130, 246, 0.12)' : 'transparent',
-                    color: isActive ? '#1d4ed8' : '#1f2937',
-                  }}
-                >
-                  <div style={folderButtonContentStyle}>
-                    <div style={folderInfoStyle}>
-                      <span style={folderNameStyle}>{entry.name}</span>
-                      {entry.depth > 0 && entry.pathLabel && <span style={folderPathStyle}>{entry.pathLabel}</span>}
+            {searchActive && sidebarDisplayEntries.length === 0 ? (
+              <div style={sidebarEmptyStyle}>未找到包含当前搜索结果的目录</div>
+            ) : (
+              sidebarDisplayEntries.map((entry) => {
+                const isActive = entry.id === activeFolderId;
+                const displayCount = searchActive
+                  ? searchResult?.matchesByFolder.get(entry.id)?.length ?? 0
+                  : entry.directBookmarkCount;
+                return (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    onClick={() => setSelectedFolderId(entry.id)}
+                    style={{
+                      ...folderButtonStyle,
+                      paddingLeft: `${16 + entry.depth * 18}px`,
+                      border: isActive ? '1px solid rgba(59, 130, 246, 0.55)' : '1px solid transparent',
+                      background: isActive ? 'rgba(59, 130, 246, 0.12)' : 'transparent',
+                      color: isActive ? '#1d4ed8' : '#1f2937',
+                    }}
+                  >
+                    <div style={folderButtonContentStyle}>
+                      <div style={folderInfoStyle}>
+                        <span style={folderNameStyle}>{entry.name}</span>
+                        {entry.pathLabel && <span style={folderPathStyle}>{entry.pathLabel}</span>}
+                      </div>
+                      <span style={folderCountStyle}>{displayCount}</span>
                     </div>
-                    <span style={folderCountStyle}>{entry.directBookmarkCount}</span>
-                  </div>
-                </button>
-              );
-            })}
+                  </button>
+                );
+              })
+            )}
           </div>
         </aside>
 
         <section style={contentStyle}>
           {header && <div style={headerContainerStyle}>{header}</div>}
-          <div style={contentHeaderStyle}>
-            <div>
-              <h3 style={contentTitleStyle}>{activeFolderMeta.name}</h3>
-              <p style={contentSubtitleStyle}>
-                {activeFolderMeta.pathLabel && (
-                  <span style={contentPathStyle}>路径：{activeFolderMeta.pathLabel} · </span>
+
+          <div style={actionBarStyle}>
+            <div style={searchAreaStyle}>
+              <div style={searchRowStyle}>
+                <input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="搜索网页名称或链接"
+                  style={searchInputFullStyle}
+                />
+                {query && (
+                  <button type="button" onClick={() => setQuery('')} style={searchClearButtonStyle}>
+                    清除
+                  </button>
                 )}
-                目录包含 {bookmarkChildren.length} 个网页
-                {bookmarkChildren.length === 0 && '，可在左侧选择其他目录查看'}
-              </p>
+              </div>
+              {searchActive && <span style={searchStatsStyle}>找到 {totalSearchMatches} 个网页</span>}
             </div>
-            <div style={searchContainerStyle}>
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="搜索网页名称或链接"
-                style={searchInputStyle}
-              />
+            <div style={actionButtonsStyle}>
+              {editable && (
+                <button
+                  type="button"
+                  onClick={() => setIsAiPanelOpen((previous) => !previous)}
+                  style={{
+                    ...secondaryActionButtonStyle,
+                    background: isAiPanelOpen ? 'rgba(59, 130, 246, 0.16)' : 'white',
+                    color: '#2563eb',
+                    borderColor: 'rgba(37, 99, 235, 0.35)',
+                  }}
+                >
+                  {isAiPanelOpen ? '关闭 AI 整理' : 'AI 自动整理'}
+                </button>
+              )}
+              <button type="button" onClick={handleExportBookmarks} style={secondaryActionButtonStyle}>
+                导出书签
+              </button>
             </div>
           </div>
 
-          {editable && query.trim().length > 0 && (
+          {isAiPanelOpen && editable && (
+            <div style={aiPanelStyle}>
+              <div style={aiPanelHeaderStyle}>
+                <div>
+                  <h4 style={aiPanelTitleStyle}>选择自动整理策略</h4>
+                  <p style={aiPanelSubtitleStyle}>生成的新目录将保留原始书签，支持随时撤销或删除。</p>
+                </div>
+                {isApplyingAi && <span style={aiWorkingStyle}>智能整理中…</span>}
+              </div>
+              <div style={aiStrategyListStyle}>
+                {AI_STRATEGIES.map((strategy) => (
+                  <button
+                    key={strategy.id}
+                    type="button"
+                    onClick={() => handleApplyAiStrategy(strategy.id)}
+                    disabled={isApplyingAi}
+                    style={{
+                      ...aiStrategyButtonStyle,
+                      opacity: isApplyingAi ? 0.55 : 1,
+                      cursor: isApplyingAi ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    <div style={aiStrategyTitleStyle}>{strategy.title}</div>
+                    <div style={aiStrategyDescriptionStyle}>{strategy.description}</div>
+                  </button>
+                ))}
+              </div>
+              {(aiMessage || aiError) && (
+                <div style={aiStatusInlineStyle}>
+                  {aiMessage && <span style={aiSuccessStyle}>{aiMessage}</span>}
+                  {aiError && <span style={aiErrorStyle}>{aiError}</span>}
+                </div>
+              )}
+            </div>
+          )}
+
+          {!isAiPanelOpen && (aiMessage || aiError) && (
+            <div style={aiStatusBannerStyle}>
+              {aiMessage && <span style={aiSuccessStyle}>{aiMessage}</span>}
+              {aiError && <span style={aiErrorStyle}>{aiError}</span>}
+            </div>
+          )}
+
+          <div style={contentHeaderStyle}>
+            <div>
+              <h3 style={contentTitleStyle}>{activeFolderName}</h3>
+              <p style={contentSubtitleStyle}>
+                {activeFolderPathLabel && <span style={contentPathStyle}>路径：{activeFolderPathLabel} · </span>}
+                {searchActive
+                  ? `当前目录匹配到 ${activeFolderBookmarkCount} 个网页`
+                  : `目录包含 ${activeFolderBookmarkCount} 个网页${
+                      activeFolderBookmarkCount === 0 ? '，可在左侧选择其他目录查看' : ''
+                    }`}
+              </p>
+            </div>
+          </div>
+
+          {editable && searchActive && (
             <div style={searchWarningStyle}>当前处于搜索模式，拖拽排序前请清空搜索条件。</div>
           )}
 
-          {editable && query.trim().length === 0 && bookmarkChildren.length > 1 && (
+          {editable && !searchActive && bookmarkChildren.length > 1 && (
             <div style={dragHintStyle}>拖拽右侧网页可以调整顺序，调整后记得保存。</div>
           )}
 
           <div style={bookmarkListWrapperStyle}>
-            {filteredBookmarks.length === 0 ? (
-              <div style={emptyStateStyle}>
-                {bookmarkChildren.length === 0
-                  ? '该目录暂无网页，可选择其他目录或重新导入书签。'
-                  : '未找到匹配的网页，尝试调整搜索关键词。'}
-              </div>
+            {bookmarkCards.length === 0 ? (
+              <div style={emptyStateStyle}>{emptyMessage}</div>
             ) : (
-              filteredBookmarks.map((bookmark) => (
-                <div
-                  key={bookmark.id}
-                  draggable={canReorder}
-                  onDragStart={(event) => {
-                    if (!canReorder) return;
-                    setDraggingId(bookmark.id);
-                    event.dataTransfer.effectAllowed = 'move';
-                    event.dataTransfer.setData('text/plain', bookmark.id);
-                  }}
-                  onDragOver={(event) => {
-                    if (!canReorder) return;
-                    event.preventDefault();
-                    setDragOverId(bookmark.id);
-                    event.dataTransfer.dropEffect = 'move';
-                  }}
-                  onDragLeave={() => setDragOverId(null)}
-                  onDrop={handleDrop(bookmark.id)}
-                  onDragEnd={() => {
-                    setDraggingId(null);
-                    setDragOverId(null);
-                  }}
-                  style={{
-                    ...bookmarkItemStyle,
-                    opacity: draggingId === bookmark.id ? 0.6 : 1,
-                    border:
-                      dragOverId === bookmark.id
-                        ? '1px dashed rgba(59, 130, 246, 0.8)'
-                        : '1px solid rgba(148, 163, 184, 0.35)',
-                    cursor: canReorder ? 'grab' : 'pointer',
-                  }}
-                >
-                  <div style={bookmarkTopLineStyle}>
-                    <span style={bookmarkNameStyle}>{bookmark.name}</span>
-                    {bookmark.url && (
-                      <span style={bookmarkHostStyle}>{extractHostname(bookmark.url)}</span>
-                    )}
-                  </div>
-                  {bookmark.url && (
-                    <a
-                      href={bookmark.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={bookmarkUrlStyle}
+              <div style={bookmarkGridStyle}>
+                {bookmarkCards.map((card) => {
+                  const { node } = card;
+                  const isEditing = editingBookmarkId === node.id;
+                  const host = node.url ? extractHostname(node.url) : '';
+                  const pathSegments = card.trail.map((item) => item.name);
+                  const pathToDisplay = card.isSearchResult
+                    ? pathSegments.join(' / ')
+                    : pathSegments.length > 1
+                      ? pathSegments.slice(0, -1).join(' / ')
+                      : '';
+                  return (
+                    <div
+                      key={node.id}
+                      draggable={canReorder && !isEditing}
+                      onDragStart={(event) => {
+                        if (!canReorder || isEditing) return;
+                        setDraggingId(node.id);
+                        event.dataTransfer.effectAllowed = 'move';
+                        event.dataTransfer.setData('text/plain', node.id);
+                      }}
+                      onDragOver={(event) => {
+                        if (!canReorder) return;
+                        event.preventDefault();
+                        setDragOverId(node.id);
+                        event.dataTransfer.dropEffect = 'move';
+                      }}
+                      onDragLeave={() => setDragOverId((current) => (current === node.id ? null : current))}
+                      onDrop={handleDrop(node.id)}
+                      onDragEnd={() => {
+                        setDraggingId(null);
+                        setDragOverId(null);
+                      }}
+                      style={{
+                        ...bookmarkItemStyle,
+                        opacity: draggingId === node.id ? 0.6 : 1,
+                        border:
+                          dragOverId === node.id
+                            ? '1px dashed rgba(59, 130, 246, 0.8)'
+                            : '1px solid rgba(148, 163, 184, 0.35)',
+                        cursor: canReorder ? 'grab' : 'default',
+                      }}
                     >
-                      {bookmark.url}
-                    </a>
-                  )}
-                </div>
-              ))
+                      {isEditing ? (
+                        <div style={editingContainerStyle}>
+                          <input
+                            value={editingValue}
+                            onChange={(event) => setEditingValue(event.target.value)}
+                            onBlur={() => handleCommitEditing(node.id, editingValue)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                handleCommitEditing(node.id, editingValue);
+                              } else if (event.key === 'Escape') {
+                                event.preventDefault();
+                                handleCancelEditing();
+                              }
+                            }}
+                            autoFocus
+                            style={editingInputStyle}
+                          />
+                          <div style={editActionsStyle}>
+                            <button
+                              type="button"
+                              style={editSaveButtonStyle}
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => handleCommitEditing(node.id, editingValue)}
+                            >
+                              保存
+                            </button>
+                            <button
+                              type="button"
+                              style={editCancelButtonStyle}
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={handleCancelEditing}
+                            >
+                              取消
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div style={bookmarkTitleRowStyle}>
+                          <span style={bookmarkNameStyle}>{node.name?.trim() || '未命名网页'}</span>
+                          {editable && (
+                            <button
+                              type="button"
+                              style={editButtonStyle}
+                              onClick={() => handleStartEditing(node.id, node.name ?? '')}
+                            >
+                              编辑名称
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      <div style={bookmarkMetaRowStyle}>
+                        {host && <span style={bookmarkHostStyle}>{host}</span>}
+                        {pathToDisplay && <span style={bookmarkPathStyle}>{pathToDisplay}</span>}
+                      </div>
+                      {node.url && (
+                        <a href={node.url} target="_blank" rel="noopener noreferrer" style={bookmarkUrlStyle}>
+                          {node.url}
+                        </a>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             )}
             {canReorder && draggingId && (
               <div
@@ -290,30 +706,66 @@ export function NavigationViewer({
   );
 }
 
-function collectFolders(root: BookmarkNode): FolderEntry[] {
-  if (root.type !== 'folder') return [];
-  const result: FolderEntry[] = [];
+function createNavigationIndex(root: BookmarkNode): NavigationIndex {
+  if (root.type !== 'folder') {
+    return {
+      folderEntries: [],
+      bookmarkMatches: [],
+      folderTrailMap: new Map(),
+    };
+  }
 
-  const traverse = (node: BookmarkNode, depth: number, ancestry: string[]) => {
+  const folderEntries: FolderEntry[] = [];
+  const bookmarkMatches: BookmarkMatch[] = [];
+  const folderTrailMap = new Map<string, FolderTrailItem[]>();
+
+  const traverse = (node: BookmarkNode, ancestry: BookmarkNode[]) => {
     if (node.type !== 'folder') return;
-    const bookmarkCount = (node.children ?? []).filter((child) => child.type === 'bookmark').length;
-    const ancestorPath = ancestry.slice(0, -1).join(' / ');
-    result.push({
+
+    const currentTrailNodes = [...ancestry, node];
+    const currentTrail: FolderTrailItem[] = currentTrailNodes.map((folderNode) => ({
+      id: folderNode.id,
+      name: folderNode.name,
+    }));
+    const pathLabel = currentTrailNodes.slice(0, -1).map((folderNode) => folderNode.name).join(' / ');
+    const children = node.children ?? [];
+    const directBookmarks = children.filter(
+      (child): child is BookmarkNode & { type: 'bookmark' } => child.type === 'bookmark',
+    );
+
+    folderEntries.push({
       id: node.id,
       name: node.name,
-      depth,
-      pathLabel: ancestorPath,
-      directBookmarkCount: bookmarkCount,
+      depth: currentTrailNodes.length - 1,
+      pathLabel,
+      directBookmarkCount: directBookmarks.length,
+      trail: currentTrail,
     });
-    (node.children ?? []).forEach((child) => {
-      if (child.type === 'folder') {
-        traverse(child, depth + 1, [...ancestry, child.name]);
+    folderTrailMap.set(node.id, currentTrail);
+
+    for (const child of children) {
+      if (child.type === 'bookmark') {
+        bookmarkMatches.push({
+          node: child,
+          parentFolderId: node.id,
+          trail: currentTrail,
+          pathLabel: currentTrail.map((folder) => folder.name).join(' / '),
+          lowerCaseName: (child.name ?? '').toLowerCase(),
+          lowerCaseUrl: (child.url ?? '').toLowerCase(),
+        });
+      } else {
+        traverse(child, currentTrailNodes);
       }
-    });
+    }
   };
 
-  traverse(root, 0, [root.name]);
-  return result;
+  traverse(root, []);
+
+  return {
+    folderEntries,
+    bookmarkMatches,
+    folderTrailMap,
+  };
 }
 
 function findFolderById(node: BookmarkNode, id: string | null): BookmarkNode | null {
@@ -379,13 +831,11 @@ function reorderWithinNode(
   };
 }
 
-function reorderWithinFolder(
-  folder: BookmarkNode,
-  sourceBookmarkId: string,
-  targetIndex: number,
-): BookmarkNode {
+function reorderWithinFolder(folder: BookmarkNode, sourceBookmarkId: string, targetIndex: number): BookmarkNode {
   const children = folder.children ?? [];
-  const bookmarkChildren = children.filter((child) => child.type === 'bookmark');
+  const bookmarkChildren = children.filter(
+    (child): child is BookmarkNode & { type: 'bookmark' } => child.type === 'bookmark',
+  );
   const sourceIndex = bookmarkChildren.findIndex((child) => child.id === sourceBookmarkId);
   if (sourceIndex === -1) {
     return folder;
@@ -424,11 +874,253 @@ function reorderWithinFolder(
   };
 }
 
+function renameBookmarkInDocument(document: BookmarkDocument, bookmarkId: string, nextName: string): BookmarkDocument {
+  const updatedRoot = renameBookmarkInNode(document.root, bookmarkId, nextName);
+  if (updatedRoot === document.root) {
+    return document;
+  }
+  return {
+    ...document,
+    root: updatedRoot,
+  };
+}
+
+function renameBookmarkInNode(node: BookmarkNode, bookmarkId: string, nextName: string): BookmarkNode {
+  if (node.type !== 'folder') {
+    return node;
+  }
+  let changed = false;
+  const nextChildren = (node.children ?? []).map((child) => {
+    if (child.type === 'bookmark') {
+      if (child.id === bookmarkId) {
+        if (child.name === nextName) {
+          return child;
+        }
+        changed = true;
+        return {
+          ...child,
+          name: nextName,
+        };
+      }
+      return child;
+    }
+    const updatedChild = renameBookmarkInNode(child, bookmarkId, nextName);
+    if (updatedChild !== child) {
+      changed = true;
+      return updatedChild;
+    }
+    return child;
+  });
+  if (!changed) {
+    return node;
+  }
+  return {
+    ...node,
+    children: nextChildren,
+  };
+}
+
+function createAiOrganizedFolder(strategyId: AiStrategyId, matches: BookmarkMatch[]): BookmarkNode | null {
+  if (matches.length === 0) {
+    return null;
+  }
+  switch (strategyId) {
+    case 'domain-groups':
+      return createDomainGroupingFolder(matches);
+    case 'semantic-clusters':
+      return createSemanticGroupingFolder(matches);
+    case 'alphabetical':
+      return createAlphabeticalFolder(matches);
+    default:
+      return null;
+  }
+}
+
+function createDomainGroupingFolder(matches: BookmarkMatch[]): BookmarkNode | null {
+  const groups = new Map<string, BookmarkNode[]>();
+
+  for (const match of matches) {
+    const url = match.node.url ?? '';
+    const host = extractHostname(url);
+    const groupName = host || '未识别站点';
+    const displayName = host
+      ? `${formatDomainDisplay(host)} · ${cleanBookmarkTitle(match.node.name)}`
+      : cleanBookmarkTitle(match.node.name);
+    const clone = cloneBookmark(match.node, displayName);
+    const bucket = groups.get(groupName);
+    if (bucket) {
+      bucket.push(clone);
+    } else {
+      groups.set(groupName, [clone]);
+    }
+  }
+
+  const children = Array.from(groups.entries())
+    .sort(([a], [b]) => a.localeCompare(b, 'zh-CN'))
+    .map(([name, bookmarks]) => ({
+      type: 'folder' as const,
+      id: generateNodeId(),
+      name,
+      children: bookmarks.slice().sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')),
+    }));
+
+  if (children.length === 0) {
+    return null;
+  }
+
+  return {
+    type: 'folder',
+    id: generateNodeId(),
+    name: `AI 整理 · 域名分组（${formatFolderTimestamp(new Date())}）`,
+    children,
+  };
+}
+
+const SEMANTIC_KEYWORDS: Array<{ name: string; keywords: string[] }> = [
+  { name: '社交 & 社区', keywords: ['social', 'twitter', 'weibo', 'wechat', 'discord', 'reddit', 'facebook', 'instagram', 'douban'] },
+  { name: '效率 & 办公', keywords: ['notion', 'slack', 'trello', 'asana', 'todo', 'calendar', 'office', 'productivity', 'mail'] },
+  { name: '开发 & 技术', keywords: ['github', 'gitlab', 'stack', 'dev', 'docs', 'api', 'npm', 'vercel', 'cloud', 'developer'] },
+  { name: '资讯 & 阅读', keywords: ['news', 'medium', 'zhihu', 'infoq', '36kr', 'nytimes', 'guardian', 'newsletter', 'blog'] },
+  { name: '影音 & 娱乐', keywords: ['video', 'music', 'youtube', 'bilibili', 'spotify', 'movie', 'podcast', 'entertainment'] },
+];
+
+function createSemanticGroupingFolder(matches: BookmarkMatch[]): BookmarkNode | null {
+  const buckets = new Map<string, BookmarkNode[]>();
+  for (const category of SEMANTIC_KEYWORDS) {
+    buckets.set(category.name, []);
+  }
+  buckets.set('其他收藏', []);
+
+  for (const match of matches) {
+    const text = `${match.lowerCaseName} ${match.lowerCaseUrl}`;
+    const category =
+      SEMANTIC_KEYWORDS.find((item) => item.keywords.some((keyword) => text.includes(keyword))) ?? null;
+    const categoryName = category?.name ?? '其他收藏';
+    const renamed = `${categoryName} ｜ ${cleanBookmarkTitle(match.node.name)}`;
+    const clone = cloneBookmark(match.node, renamed);
+    buckets.get(categoryName)?.push(clone);
+  }
+
+  const children = SEMANTIC_KEYWORDS.map((category) => {
+    const items = buckets.get(category.name) ?? [];
+    if (items.length === 0) return null;
+    return {
+      type: 'folder' as const,
+      id: generateNodeId(),
+      name: category.name,
+      children: items.slice().sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')),
+    };
+  }).filter((item): item is BookmarkNode => Boolean(item));
+
+  const remaining = buckets.get('其他收藏') ?? [];
+  if (remaining.length > 0) {
+    children.push({
+      type: 'folder',
+      id: generateNodeId(),
+      name: '其他收藏',
+      children: remaining.slice().sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')),
+    });
+  }
+
+  if (children.length === 0) {
+    return null;
+  }
+
+  return {
+    type: 'folder',
+    id: generateNodeId(),
+    name: `AI 整理 · 语义主题（${formatFolderTimestamp(new Date())}）`,
+    children,
+  };
+}
+
+const ALPHABETICAL_ORDER = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split(''), '0-9', '其他'];
+
+function createAlphabeticalFolder(matches: BookmarkMatch[]): BookmarkNode | null {
+  const groups = new Map<string, BookmarkNode[]>();
+
+  for (const match of matches) {
+    const title = cleanBookmarkTitle(match.node.name);
+    const initial = title.charAt(0).toUpperCase();
+    let bucketKey: string;
+    if (/[A-Z]/.test(initial)) {
+      bucketKey = initial;
+    } else if (/[0-9]/.test(initial)) {
+      bucketKey = '0-9';
+    } else {
+      bucketKey = '其他';
+    }
+    const renamed = `${bucketKey} · ${title}`;
+    const clone = cloneBookmark(match.node, renamed);
+    const bucket = groups.get(bucketKey);
+    if (bucket) {
+      bucket.push(clone);
+    } else {
+      groups.set(bucketKey, [clone]);
+    }
+  }
+
+  const children = ALPHABETICAL_ORDER.filter((key) => groups.has(key)).map((key) => ({
+    type: 'folder' as const,
+    id: generateNodeId(),
+    name: key,
+    children: (groups.get(key) ?? []).slice().sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')),
+  }));
+
+  if (children.length === 0) {
+    return null;
+  }
+
+  return {
+    type: 'folder',
+    id: generateNodeId(),
+    name: `AI 整理 · 字母索引（${formatFolderTimestamp(new Date())}）`,
+    children,
+  };
+}
+
+function cloneBookmark(source: BookmarkNode & { type: 'bookmark' }, nextName: string): BookmarkNode {
+  return {
+    ...source,
+    id: generateNodeId(),
+    name: nextName,
+  };
+}
+
+function cleanBookmarkTitle(name: string | undefined): string {
+  const trimmed = (name ?? '').trim();
+  if (!trimmed) {
+    return '未命名网页';
+  }
+  return trimmed.replace(/\s+/g, ' ');
+}
+
+function formatDomainDisplay(host: string): string {
+  if (!host) return '未识别站点';
+  const parts = host.split('.');
+  if (parts.length <= 2) return host;
+  return `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
+}
+
+function formatFolderTimestamp(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function generateNodeId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID().replace(/-/g, '');
+  }
+  return `${Math.random().toString(36).slice(2, 10)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function extractHostname(url: string): string {
   try {
     const { hostname } = new URL(url);
     return hostname.replace(/^www\./, '');
-  } catch (error) {
+  } catch {
     return url;
   }
 }
@@ -444,7 +1136,6 @@ const layoutStyle: React.CSSProperties = {
   display: 'flex',
   gap: '24px',
   width: '100%',
-  height: '100%',
   minHeight: '520px',
   flexWrap: 'wrap',
 };
@@ -490,6 +1181,11 @@ const sidebarSubtitleStyle: React.CSSProperties = {
   color: '#64748b',
 };
 
+const sidebarSearchInfoStyle: React.CSSProperties = {
+  fontSize: '12px',
+  color: '#2563eb',
+};
+
 const sidebarListStyle: React.CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
@@ -498,6 +1194,15 @@ const sidebarListStyle: React.CSSProperties = {
   paddingRight: '6px',
   maxHeight: '100%',
   flex: '1 1 auto',
+};
+
+const sidebarEmptyStyle: React.CSSProperties = {
+  padding: '18px',
+  borderRadius: '16px',
+  border: '1px dashed rgba(148, 163, 184, 0.4)',
+  textAlign: 'center',
+  color: '#64748b',
+  background: 'rgba(248, 250, 252, 0.7)',
 };
 
 const folderButtonStyle: React.CSSProperties = {
@@ -550,7 +1255,7 @@ const folderCountStyle: React.CSSProperties = {
 };
 
 const contentStyle: React.CSSProperties = {
-  flex: '1 1 480px',
+  flex: '1 1 520px',
   display: 'flex',
   flexDirection: 'column',
   gap: '16px',
@@ -565,12 +1270,168 @@ const headerContainerStyle: React.CSSProperties = {
   marginBottom: '8px',
 };
 
-const contentHeaderStyle: React.CSSProperties = {
+const actionBarStyle: React.CSSProperties = {
   display: 'flex',
-  flexWrap: 'wrap',
+  alignItems: 'flex-end',
   justifyContent: 'space-between',
   gap: '16px',
+  flexWrap: 'wrap',
+};
+
+const searchAreaStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '6px',
+  flex: '1 1 320px',
+  minWidth: '260px',
+};
+
+const searchRowStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: '10px',
   alignItems: 'center',
+};
+
+const searchInputFullStyle: React.CSSProperties = {
+  flex: '1 1 auto',
+  padding: '11px 16px',
+  borderRadius: '14px',
+  border: '1px solid rgba(148, 163, 184, 0.5)',
+  background: 'white',
+  fontSize: '14px',
+};
+
+const searchClearButtonStyle: React.CSSProperties = {
+  padding: '10px 14px',
+  borderRadius: '12px',
+  border: '1px solid rgba(148, 163, 184, 0.5)',
+  background: 'white',
+  color: '#475569',
+  fontSize: '13px',
+  cursor: 'pointer',
+};
+
+const searchStatsStyle: React.CSSProperties = {
+  fontSize: '13px',
+  color: '#2563eb',
+};
+
+const actionButtonsStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '12px',
+  flexWrap: 'wrap',
+};
+
+const secondaryActionButtonStyle: React.CSSProperties = {
+  padding: '10px 20px',
+  borderRadius: '999px',
+  border: '1px solid rgba(148, 163, 184, 0.5)',
+  background: 'white',
+  color: '#1f2937',
+  fontWeight: 600,
+  cursor: 'pointer',
+};
+
+const aiPanelStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '16px',
+  padding: '20px',
+  borderRadius: '18px',
+  border: '1px solid rgba(59, 130, 246, 0.2)',
+  background: 'linear-gradient(135deg, rgba(191, 219, 254, 0.35), rgba(165, 243, 252, 0.25))',
+};
+
+const aiPanelHeaderStyle: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'flex-start',
+  gap: '16px',
+  flexWrap: 'wrap',
+};
+
+const aiPanelTitleStyle: React.CSSProperties = {
+  margin: '0 0 6px',
+  fontSize: '16px',
+  fontWeight: 600,
+  color: '#1d4ed8',
+};
+
+const aiPanelSubtitleStyle: React.CSSProperties = {
+  margin: 0,
+  fontSize: '13px',
+  color: '#475569',
+};
+
+const aiWorkingStyle: React.CSSProperties = {
+  color: '#2563eb',
+  fontSize: '13px',
+  fontWeight: 600,
+};
+
+const aiStrategyListStyle: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+  gap: '12px',
+};
+
+const aiStrategyButtonStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '6px',
+  alignItems: 'flex-start',
+  padding: '14px 16px',
+  borderRadius: '16px',
+  border: '1px solid rgba(59, 130, 246, 0.35)',
+  background: 'rgba(255, 255, 255, 0.86)',
+  color: '#1e293b',
+  textAlign: 'left',
+};
+
+const aiStrategyTitleStyle: React.CSSProperties = {
+  fontWeight: 600,
+  fontSize: '14px',
+  color: '#1d4ed8',
+};
+
+const aiStrategyDescriptionStyle: React.CSSProperties = {
+  fontSize: '13px',
+  color: '#475569',
+};
+
+const aiStatusInlineStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: '12px',
+  flexWrap: 'wrap',
+  fontSize: '13px',
+};
+
+const aiStatusBannerStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: '12px',
+  flexWrap: 'wrap',
+  fontSize: '13px',
+  padding: '10px 14px',
+  borderRadius: '14px',
+  background: 'rgba(219, 234, 254, 0.35)',
+  border: '1px solid rgba(147, 197, 253, 0.5)',
+};
+
+const aiSuccessStyle: React.CSSProperties = {
+  color: '#16a34a',
+};
+
+const aiErrorStyle: React.CSSProperties = {
+  color: '#dc2626',
+};
+
+const contentHeaderStyle: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  gap: '16px',
+  flexWrap: 'wrap',
 };
 
 const contentTitleStyle: React.CSSProperties = {
@@ -590,22 +1451,6 @@ const contentSubtitleStyle: React.CSSProperties = {
 
 const contentPathStyle: React.CSSProperties = {
   color: '#94a3b8',
-};
-
-const searchContainerStyle: React.CSSProperties = {
-  flex: '1 1 240px',
-  display: 'flex',
-  justifyContent: 'flex-end',
-};
-
-const searchInputStyle: React.CSSProperties = {
-  width: '100%',
-  maxWidth: '260px',
-  padding: '11px 16px',
-  borderRadius: '14px',
-  border: '1px solid rgba(148, 163, 184, 0.5)',
-  background: 'white',
-  fontSize: '14px',
 };
 
 const searchWarningStyle: React.CSSProperties = {
@@ -631,26 +1476,34 @@ const bookmarkListWrapperStyle: React.CSSProperties = {
   minHeight: '320px',
   display: 'flex',
   flexDirection: 'column',
-  gap: '12px',
+  gap: '18px',
   overflowY: 'auto',
   paddingRight: '6px',
+};
+
+const bookmarkGridStyle: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
+  gap: '16px',
+  alignItems: 'stretch',
 };
 
 const bookmarkItemStyle: React.CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
-  gap: '8px',
+  gap: '10px',
   borderRadius: '18px',
   padding: '16px 18px',
   background: 'linear-gradient(140deg, rgba(248, 250, 252, 0.96), rgba(255, 255, 255, 0.98))',
   transition: 'transform 0.2s ease, border 0.2s ease, box-shadow 0.2s ease',
+  height: '100%',
 };
 
-const bookmarkTopLineStyle: React.CSSProperties = {
+const bookmarkTitleRowStyle: React.CSSProperties = {
   display: 'flex',
   justifyContent: 'space-between',
   alignItems: 'center',
-  gap: '16px',
+  gap: '12px',
 };
 
 const bookmarkNameStyle: React.CSSProperties = {
@@ -659,11 +1512,34 @@ const bookmarkNameStyle: React.CSSProperties = {
   fontSize: '16px',
   overflow: 'hidden',
   textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
+const editButtonStyle: React.CSSProperties = {
+  border: 'none',
+  background: 'transparent',
+  color: '#2563eb',
+  fontSize: '13px',
+  fontWeight: 600,
+  cursor: 'pointer',
+};
+
+const bookmarkMetaRowStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: '10px',
+  alignItems: 'center',
+  flexWrap: 'wrap',
 };
 
 const bookmarkHostStyle: React.CSSProperties = {
   fontSize: '13px',
-  color: '#64748b',
+  color: '#475569',
+  fontWeight: 500,
+};
+
+const bookmarkPathStyle: React.CSSProperties = {
+  fontSize: '12px',
+  color: '#94a3b8',
 };
 
 const bookmarkUrlStyle: React.CSSProperties = {
@@ -672,8 +1548,49 @@ const bookmarkUrlStyle: React.CSSProperties = {
   wordBreak: 'break-all',
 };
 
+const editingContainerStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '8px',
+};
+
+const editingInputStyle: React.CSSProperties = {
+  width: '100%',
+  padding: '10px 12px',
+  borderRadius: '12px',
+  border: '1px solid rgba(148, 163, 184, 0.5)',
+  fontSize: '14px',
+};
+
+const editActionsStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: '8px',
+  flexWrap: 'wrap',
+};
+
+const editSaveButtonStyle: React.CSSProperties = {
+  padding: '8px 14px',
+  borderRadius: '10px',
+  border: 'none',
+  background: 'linear-gradient(135deg, #2563eb, #3b82f6)',
+  color: '#ffffff',
+  fontSize: '13px',
+  fontWeight: 600,
+  cursor: 'pointer',
+};
+
+const editCancelButtonStyle: React.CSSProperties = {
+  padding: '8px 14px',
+  borderRadius: '10px',
+  border: '1px solid rgba(148, 163, 184, 0.4)',
+  background: 'white',
+  color: '#475569',
+  fontSize: '13px',
+  fontWeight: 600,
+  cursor: 'pointer',
+};
+
 const dropZoneStyle: React.CSSProperties = {
-  marginTop: '6px',
   padding: '14px 16px',
   borderRadius: '16px',
   textAlign: 'center',
