@@ -109,6 +109,8 @@ export function NavigationViewer({
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [hoveredBookmarkId, setHoveredBookmarkId] = useState<string | null>(null);
   const [pressingBookmarkId, setPressingBookmarkId] = useState<string | null>(null);
+  const [isRenamingFolder, setIsRenamingFolder] = useState(false);
+  const [folderRenameValue, setFolderRenameValue] = useState('');
   const [editingBookmarkId, setEditingBookmarkId] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState('');
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
@@ -117,6 +119,7 @@ export function NavigationViewer({
   const [aiError, setAiError] = useState<string | null>(null);
   const [collapsedFolderIds, setCollapsedFolderIds] = useState<Set<string>>(() => new Set());
   const previousRootIdRef = useRef<string | null>(null);
+  const folderRenameInputRef = useRef<HTMLInputElement | null>(null);
 
   const trimmedQuery = query.trim();
   const normalizedQuery = trimmedQuery.toLowerCase();
@@ -272,6 +275,25 @@ export function NavigationViewer({
     return folderEntries.find((entry) => entry.id === activeFolderId) ?? null;
   }, [activeFolderId, folderEntries]);
 
+  useEffect(() => {
+    if (!activeFolderEntry) {
+      setIsRenamingFolder(false);
+      setFolderRenameValue('');
+      return;
+    }
+    setFolderRenameValue(activeFolderEntry.name ?? '');
+    setIsRenamingFolder(false);
+  }, [activeFolderEntry?.id, activeFolderEntry?.name]);
+
+  useEffect(() => {
+    if (isRenamingFolder && folderRenameInputRef.current) {
+      folderRenameInputRef.current.focus();
+      folderRenameInputRef.current.select();
+    }
+  }, [isRenamingFolder]);
+
+  const originalFolderName = activeFolderEntry?.name ?? '';
+
   const activeFolderNode = useMemo(() => {
     if (!bookmarkDocument || !activeFolderId) {
       return null;
@@ -315,6 +337,45 @@ export function NavigationViewer({
   const totalSearchMatches = searchActive ? searchResult?.matches.length ?? 0 : 0;
 
   const canReorder = editable && !searchActive && bookmarkChildren.length > 1;
+
+  const handleStartFolderRename = useCallback(() => {
+    if (!editable || !activeFolderEntry) {
+      return;
+    }
+    setFolderRenameValue(activeFolderEntry.name ?? '');
+    setIsRenamingFolder(true);
+  }, [editable, activeFolderEntry]);
+
+  const handleCancelFolderRename = useCallback(() => {
+    setFolderRenameValue(originalFolderName);
+    setIsRenamingFolder(false);
+  }, [originalFolderName]);
+
+  const handleCommitFolderRename = useCallback(() => {
+    if (!editable || !bookmarkDocument || !activeFolderId || !activeFolderEntry) {
+      setFolderRenameValue(originalFolderName);
+      setIsRenamingFolder(false);
+      return;
+    }
+    const trimmed = folderRenameValue.trim();
+    const currentName = activeFolderEntry.name ?? '';
+    if (!trimmed) {
+      setFolderRenameValue(currentName);
+      setIsRenamingFolder(false);
+      return;
+    }
+    if (trimmed === currentName) {
+      setFolderRenameValue(currentName);
+      setIsRenamingFolder(false);
+      return;
+    }
+    const nextDocument = renameFolderInDocument(bookmarkDocument, activeFolderId, trimmed);
+    if (onDocumentChange && nextDocument !== bookmarkDocument) {
+      onDocumentChange(nextDocument);
+    }
+    setFolderRenameValue(trimmed);
+    setIsRenamingFolder(false);
+  }, [editable, bookmarkDocument, activeFolderId, activeFolderEntry, folderRenameValue, onDocumentChange, originalFolderName]);
 
   const handleToggleFolder = useCallback((folderId: string) => {
     setCollapsedFolderIds((previous) => {
@@ -689,8 +750,57 @@ export function NavigationViewer({
           )}
 
           <div style={contentHeaderStyle}>
-            <div>
-              <h3 style={contentTitleStyle}>{activeFolderName}</h3>
+            <div style={contentTitleColumnStyle}>
+              <div style={contentTitleRowStyle}>
+                {isRenamingFolder ? (
+                  <div style={folderRenameRowStyle}>
+                    <input
+                      ref={folderRenameInputRef}
+                      value={folderRenameValue}
+                      onChange={(event) => setFolderRenameValue(event.target.value)}
+                      onBlur={handleCommitFolderRename}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          handleCommitFolderRename();
+                        } else if (event.key === 'Escape') {
+                          event.preventDefault();
+                          handleCancelFolderRename();
+                        }
+                      }}
+                      placeholder="输入目录名称"
+                      style={folderRenameInputStyle}
+                    />
+                    <div style={folderRenameActionsStyle}>
+                      <button
+                        type="button"
+                        style={editSaveButtonStyle}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={handleCommitFolderRename}
+                      >
+                        保存
+                      </button>
+                      <button
+                        type="button"
+                        style={editCancelButtonStyle}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={handleCancelFolderRename}
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <h3 style={contentTitleStyle}>{activeFolderName}</h3>
+                    {editable && activeFolderEntry && (
+                      <button type="button" onClick={handleStartFolderRename} style={renameFolderButtonStyle}>
+                        重命名目录
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
               <p style={contentSubtitleStyle}>
                 {searchActive
                   ? `匹配到 ${activeFolderBookmarkCount} 个网页`
@@ -1139,6 +1249,46 @@ function renameBookmarkInNode(node: BookmarkNode, bookmarkId: string, nextName: 
   return {
     ...node,
     children: nextChildren,
+  };
+}
+
+function renameFolderInDocument(document: BookmarkDocument, folderId: string, nextName: string): BookmarkDocument {
+  const updatedRoot = renameFolderInNode(document.root, folderId, nextName);
+  if (updatedRoot === document.root) {
+    return document;
+  }
+  return {
+    ...document,
+    root: updatedRoot,
+  };
+}
+
+function renameFolderInNode(node: BookmarkNode, folderId: string, nextName: string): BookmarkNode {
+  if (node.type !== 'folder') {
+    return node;
+  }
+  const existingChildren = node.children ?? [];
+  let childrenChanged = false;
+  const nextChildren = existingChildren.map((child) => {
+    if (child.type !== 'folder') {
+      return child;
+    }
+    const updatedChild = renameFolderInNode(child, folderId, nextName);
+    if (updatedChild !== child) {
+      childrenChanged = true;
+      return updatedChild;
+    }
+    return child;
+  });
+  const isTarget = node.id === folderId;
+  const nameChanged = isTarget && node.name !== nextName;
+  if (!nameChanged && !childrenChanged) {
+    return node;
+  }
+  return {
+    ...node,
+    name: nameChanged ? nextName : node.name,
+    children: childrenChanged ? nextChildren : node.children,
   };
 }
 
@@ -1734,6 +1884,21 @@ const contentHeaderStyle: React.CSSProperties = {
   flexWrap: 'wrap',
 };
 
+const contentTitleColumnStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '6px',
+  flex: '1 1 auto',
+  minWidth: 0,
+};
+
+const contentTitleRowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '12px',
+  flexWrap: 'wrap',
+};
+
 const contentTitleStyle: React.CSSProperties = {
   margin: 0,
   fontSize: '20px',
@@ -1747,6 +1912,43 @@ const contentSubtitleStyle: React.CSSProperties = {
   display: 'flex',
   flexWrap: 'wrap',
   gap: '6px',
+};
+
+const renameFolderButtonStyle: React.CSSProperties = {
+  padding: '6px 14px',
+  borderRadius: '999px',
+  border: '1px solid rgba(37, 99, 235, 0.35)',
+  background: 'white',
+  color: '#2563eb',
+  fontSize: '13px',
+  fontWeight: 600,
+  cursor: 'pointer',
+  transition: 'background 0.2s ease, border 0.2s ease, color 0.2s ease',
+};
+
+const folderRenameRowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '12px',
+  flexWrap: 'wrap',
+  width: '100%',
+};
+
+const folderRenameInputStyle: React.CSSProperties = {
+  padding: '9px 14px',
+  borderRadius: '12px',
+  border: '1px solid rgba(148, 163, 184, 0.5)',
+  fontSize: '16px',
+  fontWeight: 600,
+  minWidth: '200px',
+  background: 'rgba(255, 255, 255, 0.96)',
+};
+
+const folderRenameActionsStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '8px',
+  flexWrap: 'wrap',
 };
 
 
