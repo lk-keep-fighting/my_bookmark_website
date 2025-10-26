@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import type { BookmarkDocument, BookmarkNode } from '@/lib/bookmarks';
 import { bookmarkDocumentToHtml, calculateBookmarkStatistics } from '@/lib/bookmarks';
@@ -22,22 +22,26 @@ type FolderEntry = {
   id: string;
   name: string;
   depth: number;
-  pathLabel: string;
   directBookmarkCount: number;
   trail: FolderTrailItem[];
+};
+
+type FolderTreeNode = {
+  entry: FolderEntry;
+  children: FolderTreeNode[];
 };
 
 interface NavigationIndex {
   folderEntries: FolderEntry[];
   bookmarkMatches: BookmarkMatch[];
   folderTrailMap: Map<string, FolderTrailItem[]>;
+  folderTree: FolderTreeNode | null;
 }
 
 type BookmarkMatch = {
   node: BookmarkNode & { type: 'bookmark' };
   parentFolderId: string;
   trail: FolderTrailItem[];
-  pathLabel: string;
   lowerCaseName: string;
   lowerCaseUrl: string;
 };
@@ -45,9 +49,6 @@ type BookmarkMatch = {
 type BookmarkCardData = {
   node: BookmarkNode & { type: 'bookmark' };
   parentFolderId: string;
-  trail: FolderTrailItem[];
-  pathLabel: string;
-  isSearchResult: boolean;
 };
 
 type AiStrategyId = 'domain-groups' | 'semantic-clusters' | 'alphabetical';
@@ -74,6 +75,7 @@ const EMPTY_INDEX: NavigationIndex = {
   folderEntries: [],
   bookmarkMatches: [],
   folderTrailMap: new Map(),
+  folderTree: null,
 };
 
 interface SearchResult {
@@ -95,7 +97,7 @@ export function NavigationViewer({
     return createNavigationIndex(bookmarkDocument.root);
   }, [bookmarkDocument]);
 
-  const { folderEntries, bookmarkMatches, folderTrailMap } = navigationIndex;
+  const { folderEntries, bookmarkMatches, folderTrailMap, folderTree } = navigationIndex;
 
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -107,6 +109,8 @@ export function NavigationViewer({
   const [isApplyingAi, setIsApplyingAi] = useState(false);
   const [aiMessage, setAiMessage] = useState<string | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [collapsedFolderIds, setCollapsedFolderIds] = useState<Set<string>>(() => new Set());
+  const previousRootIdRef = useRef<string | null>(null);
 
   const trimmedQuery = query.trim();
   const normalizedQuery = trimmedQuery.toLowerCase();
@@ -143,6 +147,28 @@ export function NavigationViewer({
     return folderEntries.filter((entry) => (searchResult?.matchesByFolder.get(entry.id)?.length ?? 0) > 0);
   }, [folderEntries, searchActive, searchResult]);
 
+  const matchedFolderIdSet = useMemo(() => {
+    if (!searchActive) {
+      return null;
+    }
+    return new Set(visibleFolderEntries.map((entry) => entry.id));
+  }, [searchActive, visibleFolderEntries]);
+
+  const searchVisibleFolderIdSet = useMemo(() => {
+    if (!searchActive) {
+      return null;
+    }
+    const ids = new Set<string>();
+    for (const entry of visibleFolderEntries) {
+      for (const item of entry.trail) {
+        ids.add(item.id);
+      }
+    }
+    return ids;
+  }, [searchActive, visibleFolderEntries]);
+
+  const rootFolderId = folderEntries.length > 0 ? folderEntries[0].id : null;
+
   useEffect(() => {
     if (!bookmarkDocument) {
       setSelectedFolderId(null);
@@ -159,9 +185,48 @@ export function NavigationViewer({
   }, [bookmarkDocument, folderEntries, visibleFolderEntries, searchActive, selectedFolderId]);
 
   useEffect(() => {
+    if (!rootFolderId) {
+      setCollapsedFolderIds(new Set());
+      previousRootIdRef.current = null;
+      return;
+    }
+    if (previousRootIdRef.current !== rootFolderId) {
+      const defaultCollapsed = new Set<string>();
+      for (const entry of folderEntries) {
+        if (entry.depth >= 2) {
+          defaultCollapsed.add(entry.id);
+        }
+      }
+      defaultCollapsed.delete(rootFolderId);
+      setCollapsedFolderIds(defaultCollapsed);
+      previousRootIdRef.current = rootFolderId;
+    }
+  }, [rootFolderId, folderEntries]);
+
+  useEffect(() => {
     setDraggingId(null);
     setDragOverId(null);
   }, [selectedFolderId, searchActive]);
+
+  useEffect(() => {
+    if (!selectedFolderId) {
+      return;
+    }
+    const trail = folderTrailMap.get(selectedFolderId);
+    if (!trail || trail.length === 0) {
+      return;
+    }
+    setCollapsedFolderIds((previous) => {
+      let changed = false;
+      const next = new Set(previous);
+      for (const item of trail) {
+        if (next.delete(item.id)) {
+          changed = true;
+        }
+      }
+      return changed ? next : previous;
+    });
+  }, [selectedFolderId, folderTrailMap]);
 
   useEffect(() => {
     if (!aiMessage || typeof window === 'undefined') return;
@@ -222,21 +287,13 @@ export function NavigationViewer({
       return matches.map((match) => ({
         node: match.node,
         parentFolderId: match.parentFolderId,
-        trail: match.trail,
-        pathLabel: match.pathLabel,
-        isSearchResult: true,
       }));
     }
-    const trail = folderTrailMap.get(activeFolderId) ?? [];
-    const pathLabel = trail.map((item) => item.name).join(' / ');
     return bookmarkChildren.map((bookmark) => ({
       node: bookmark,
       parentFolderId: activeFolderId,
-      trail,
-      pathLabel,
-      isSearchResult: false,
     }));
-  }, [bookmarkDocument, activeFolderId, searchActive, searchResult, folderTrailMap, bookmarkChildren]);
+  }, [bookmarkDocument, activeFolderId, searchActive, searchResult, bookmarkChildren]);
 
   const activeFolderBookmarkCount = searchActive
     ? activeFolderId
@@ -247,6 +304,18 @@ export function NavigationViewer({
   const totalSearchMatches = searchActive ? searchResult?.matches.length ?? 0 : 0;
 
   const canReorder = editable && !searchActive && bookmarkChildren.length > 1;
+
+  const handleToggleFolder = useCallback((folderId: string) => {
+    setCollapsedFolderIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(folderId)) {
+        next.delete(folderId);
+      } else {
+        next.add(folderId);
+      }
+      return next;
+    });
+  }, []);
 
   const handleDrop = useCallback(
     (targetBookmarkId: string | null) => (event: React.DragEvent<HTMLDivElement>) => {
@@ -395,9 +464,8 @@ export function NavigationViewer({
     );
   }
 
-  const sidebarDisplayEntries = visibleFolderEntries;
-  const activeFolderName = activeFolderEntry?.name ?? (searchActive ? '未匹配目录' : bookmarkDocument.root.name);
-  const activeFolderPathLabel = activeFolderEntry?.pathLabel ?? '';
+  const activeFolderName =
+    activeFolderEntry?.name ?? (searchActive ? '搜索结果' : bookmarkDocument.root.name);
 
   const emptyMessage = searchActive
     ? trimmedQuery
@@ -406,6 +474,73 @@ export function NavigationViewer({
     : bookmarkChildren.length === 0
       ? '该目录暂无网页，可选择其他目录或重新导入书签。'
       : '暂无可展示的网页。';
+
+  const renderFolderNode = (node: FolderTreeNode): React.ReactNode => {
+    const { entry, children } = node;
+    if (searchActive && searchVisibleFolderIdSet && !searchVisibleFolderIdSet.has(entry.id)) {
+      return null;
+    }
+    const hasChildren = children.length > 0;
+    const isCollapsed = searchActive ? false : collapsedFolderIds.has(entry.id);
+    const isActive = entry.id === activeFolderId;
+    const displayCount = searchActive
+      ? searchResult?.matchesByFolder.get(entry.id)?.length ?? 0
+      : entry.directBookmarkCount;
+    const isSearchMatch = matchedFolderIdSet ? matchedFolderIdSet.has(entry.id) : false;
+
+    return (
+      <div key={entry.id} style={folderTreeNodeStyle}>
+        <div style={{ ...folderRowWrapperStyle, paddingLeft: `${entry.depth * 16}px` }}>
+          {hasChildren ? (
+            <button
+              type="button"
+              aria-expanded={!isCollapsed}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (searchActive) {
+                  return;
+                }
+                handleToggleFolder(entry.id);
+              }}
+              style={{
+                ...folderToggleStyle,
+                opacity: searchActive ? 0.4 : 1,
+                cursor: searchActive ? 'default' : 'pointer',
+                background: isCollapsed ? 'rgba(241, 245, 249, 0.9)' : 'rgba(255, 255, 255, 0.95)',
+                borderColor: isCollapsed ? 'rgba(148, 163, 184, 0.4)' : 'rgba(59, 130, 246, 0.35)',
+              }}
+              aria-label={isCollapsed ? '展开目录' : '收起目录'}
+              disabled={searchActive}
+            >
+              {isCollapsed ? '▸' : '▾'}
+            </button>
+          ) : (
+            <span style={folderTogglePlaceholderStyle} />
+          )}
+          <button
+            type="button"
+            aria-current={isActive ? 'true' : undefined}
+            onClick={() => setSelectedFolderId(entry.id)}
+            style={{
+              ...folderButtonStyle,
+              border: isActive ? '1px solid rgba(59, 130, 246, 0.55)' : '1px solid transparent',
+              background: isActive ? 'rgba(59, 130, 246, 0.12)' : 'transparent',
+              color: isActive ? '#1d4ed8' : '#1f2937',
+              boxShadow: !isActive && isSearchMatch ? 'inset 0 0 0 1px rgba(59, 130, 246, 0.25)' : undefined,
+            }}
+          >
+            <div style={folderButtonContentStyle}>
+              <span style={folderNameStyle}>{entry.name}</span>
+              <span style={folderCountStyle}>{displayCount}</span>
+            </div>
+          </button>
+        </div>
+        {hasChildren && !isCollapsed && (
+          <div style={folderChildrenStyle}>{children.map((child) => renderFolderNode(child))}</div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div style={outerWrapperStyle}>
@@ -418,41 +553,16 @@ export function NavigationViewer({
               共 {bookmarkDocument.statistics.total_folders} 个目录 · {bookmarkDocument.statistics.total_bookmarks} 个网页
             </p>
             {searchActive && (
-              <span style={sidebarSearchInfoStyle}>搜索结果覆盖 {sidebarDisplayEntries.length} 个目录</span>
+              <span style={sidebarSearchInfoStyle}>搜索结果覆盖 {visibleFolderEntries.length} 个目录</span>
             )}
           </div>
           <div style={sidebarListStyle}>
-            {searchActive && sidebarDisplayEntries.length === 0 ? (
+            {searchActive && visibleFolderEntries.length === 0 ? (
               <div style={sidebarEmptyStyle}>未找到包含当前搜索结果的目录</div>
+            ) : folderTree ? (
+              renderFolderNode(folderTree)
             ) : (
-              sidebarDisplayEntries.map((entry) => {
-                const isActive = entry.id === activeFolderId;
-                const displayCount = searchActive
-                  ? searchResult?.matchesByFolder.get(entry.id)?.length ?? 0
-                  : entry.directBookmarkCount;
-                return (
-                  <button
-                    key={entry.id}
-                    type="button"
-                    onClick={() => setSelectedFolderId(entry.id)}
-                    style={{
-                      ...folderButtonStyle,
-                      paddingLeft: `${16 + entry.depth * 18}px`,
-                      border: isActive ? '1px solid rgba(59, 130, 246, 0.55)' : '1px solid transparent',
-                      background: isActive ? 'rgba(59, 130, 246, 0.12)' : 'transparent',
-                      color: isActive ? '#1d4ed8' : '#1f2937',
-                    }}
-                  >
-                    <div style={folderButtonContentStyle}>
-                      <div style={folderInfoStyle}>
-                        <span style={folderNameStyle}>{entry.name}</span>
-                        {entry.pathLabel && <span style={folderPathStyle}>{entry.pathLabel}</span>}
-                      </div>
-                      <span style={folderCountStyle}>{displayCount}</span>
-                    </div>
-                  </button>
-                );
-              })
+              <div style={sidebarEmptyStyle}>暂无目录</div>
             )}
           </div>
         </aside>
@@ -545,10 +655,9 @@ export function NavigationViewer({
             <div>
               <h3 style={contentTitleStyle}>{activeFolderName}</h3>
               <p style={contentSubtitleStyle}>
-                {activeFolderPathLabel && <span style={contentPathStyle}>路径：{activeFolderPathLabel} · </span>}
                 {searchActive
-                  ? `当前目录匹配到 ${activeFolderBookmarkCount} 个网页`
-                  : `目录包含 ${activeFolderBookmarkCount} 个网页${
+                  ? `匹配到 ${activeFolderBookmarkCount} 个网页`
+                  : `包含 ${activeFolderBookmarkCount} 个网页${
                       activeFolderBookmarkCount === 0 ? '，可在左侧选择其他目录查看' : ''
                     }`}
               </p>
@@ -572,12 +681,6 @@ export function NavigationViewer({
                   const { node } = card;
                   const isEditing = editingBookmarkId === node.id;
                   const host = node.url ? extractHostname(node.url) : '';
-                  const pathSegments = card.trail.map((item) => item.name);
-                  const pathToDisplay = card.isSearchResult
-                    ? pathSegments.join(' / ')
-                    : pathSegments.length > 1
-                      ? pathSegments.slice(0, -1).join(' / ')
-                      : '';
                   return (
                     <div
                       key={node.id}
@@ -661,10 +764,11 @@ export function NavigationViewer({
                           )}
                         </div>
                       )}
-                      <div style={bookmarkMetaRowStyle}>
-                        {host && <span style={bookmarkHostStyle}>{host}</span>}
-                        {pathToDisplay && <span style={bookmarkPathStyle}>{pathToDisplay}</span>}
-                      </div>
+                      {host && (
+                        <div style={bookmarkMetaRowStyle}>
+                          <span style={bookmarkHostStyle}>{host}</span>
+                        </div>
+                      )}
                       {node.url && (
                         <a href={node.url} target="_blank" rel="noopener noreferrer" style={bookmarkUrlStyle}>
                           {node.url}
@@ -712,6 +816,7 @@ function createNavigationIndex(root: BookmarkNode): NavigationIndex {
       folderEntries: [],
       bookmarkMatches: [],
       folderTrailMap: new Map(),
+      folderTree: null,
     };
   }
 
@@ -719,29 +824,31 @@ function createNavigationIndex(root: BookmarkNode): NavigationIndex {
   const bookmarkMatches: BookmarkMatch[] = [];
   const folderTrailMap = new Map<string, FolderTrailItem[]>();
 
-  const traverse = (node: BookmarkNode, ancestry: BookmarkNode[]) => {
-    if (node.type !== 'folder') return;
+  const buildTree = (node: BookmarkNode, ancestry: BookmarkNode[]): FolderTreeNode | null => {
+    if (node.type !== 'folder') return null;
 
     const currentTrailNodes = [...ancestry, node];
     const currentTrail: FolderTrailItem[] = currentTrailNodes.map((folderNode) => ({
       id: folderNode.id,
       name: folderNode.name,
     }));
-    const pathLabel = currentTrailNodes.slice(0, -1).map((folderNode) => folderNode.name).join(' / ');
     const children = node.children ?? [];
     const directBookmarks = children.filter(
       (child): child is BookmarkNode & { type: 'bookmark' } => child.type === 'bookmark',
     );
 
-    folderEntries.push({
+    const entry: FolderEntry = {
       id: node.id,
       name: node.name,
       depth: currentTrailNodes.length - 1,
-      pathLabel,
       directBookmarkCount: directBookmarks.length,
       trail: currentTrail,
-    });
+    };
+
+    folderEntries.push(entry);
     folderTrailMap.set(node.id, currentTrail);
+
+    const childFolders: FolderTreeNode[] = [];
 
     for (const child of children) {
       if (child.type === 'bookmark') {
@@ -749,22 +856,30 @@ function createNavigationIndex(root: BookmarkNode): NavigationIndex {
           node: child as BookmarkNode & { type: 'bookmark' },
           parentFolderId: node.id,
           trail: currentTrail,
-          pathLabel: currentTrail.map((folder) => folder.name).join(' / '),
           lowerCaseName: (child.name ?? '').toLowerCase(),
           lowerCaseUrl: (child.url ?? '').toLowerCase(),
         });
       } else {
-        traverse(child, currentTrailNodes);
+        const childTree = buildTree(child, currentTrailNodes);
+        if (childTree) {
+          childFolders.push(childTree);
+        }
       }
     }
+
+    return {
+      entry,
+      children: childFolders,
+    };
   };
 
-  traverse(root, []);
+  const folderTree = buildTree(root, []);
 
   return {
     folderEntries,
     bookmarkMatches,
     folderTrailMap,
+    folderTree: folderTree ?? null,
   };
 }
 
@@ -1205,6 +1320,53 @@ const sidebarEmptyStyle: React.CSSProperties = {
   background: 'rgba(248, 250, 252, 0.7)',
 };
 
+const folderTreeNodeStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '6px',
+  width: '100%',
+};
+
+const folderRowWrapperStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '8px',
+  width: '100%',
+};
+
+const folderToggleStyle: React.CSSProperties = {
+  width: '28px',
+  height: '28px',
+  borderRadius: '10px',
+  border: '1px solid rgba(148, 163, 184, 0.4)',
+  background: 'rgba(255, 255, 255, 0.9)',
+  color: '#475569',
+  fontSize: '13px',
+  fontWeight: 600,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  transition: 'background 0.2s ease, border 0.2s ease',
+};
+
+const folderTogglePlaceholderStyle: React.CSSProperties = {
+  width: '28px',
+  height: '28px',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  borderRadius: '10px',
+  border: '1px solid transparent',
+  visibility: 'hidden',
+};
+
+const folderChildrenStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '6px',
+  width: '100%',
+};
+
 const folderButtonStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
@@ -1215,6 +1377,8 @@ const folderButtonStyle: React.CSSProperties = {
   padding: '12px 16px',
   cursor: 'pointer',
   transition: 'background 0.2s ease, border 0.2s ease',
+  width: '100%',
+  textAlign: 'left',
 };
 
 const folderButtonContentStyle: React.CSSProperties = {
@@ -1225,23 +1389,18 @@ const folderButtonContentStyle: React.CSSProperties = {
   width: '100%',
 };
 
-const folderInfoStyle: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: '4px',
-  alignItems: 'flex-start',
-};
 
 const folderNameStyle: React.CSSProperties = {
   fontWeight: 600,
   fontSize: '15px',
   color: 'inherit',
+  flex: '1 1 auto',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
 };
 
-const folderPathStyle: React.CSSProperties = {
-  fontSize: '12px',
-  color: '#94a3b8',
-};
+
 
 const folderCountStyle: React.CSSProperties = {
   minWidth: '32px',
@@ -1449,9 +1608,6 @@ const contentSubtitleStyle: React.CSSProperties = {
   gap: '6px',
 };
 
-const contentPathStyle: React.CSSProperties = {
-  color: '#94a3b8',
-};
 
 const searchWarningStyle: React.CSSProperties = {
   padding: '10px 14px',
@@ -1537,10 +1693,6 @@ const bookmarkHostStyle: React.CSSProperties = {
   fontWeight: 500,
 };
 
-const bookmarkPathStyle: React.CSSProperties = {
-  fontSize: '12px',
-  color: '#94a3b8',
-};
 
 const bookmarkUrlStyle: React.CSSProperties = {
   color: '#2563eb',
