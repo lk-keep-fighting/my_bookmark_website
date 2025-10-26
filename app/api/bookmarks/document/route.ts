@@ -52,13 +52,20 @@ export async function PUT(request: Request) {
   const admin = getSupabaseAdminClient();
   const now = new Date().toISOString();
 
+  const updates: Database["public"]["Tables"]["bookmark_collections"]["Update"] = {
+    data: payload.document,
+    updated_at: now,
+  };
+
+  const metadataTitle = payload.document.metadata?.siteTitle;
+  if (typeof metadataTitle === "string") {
+    const trimmedTitle = metadataTitle.trim();
+    updates.title = trimmedTitle ? trimmedTitle : null;
+  }
+
   const { error: updateError } = await admin
     .from("bookmark_collections")
-    .update({
-      data: payload.document,
-      updated_at: now,
-      title: payload.document.root?.name ?? null,
-    })
+    .update(updates)
     .eq("id", existing.id);
 
   if (updateError) {

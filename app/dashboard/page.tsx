@@ -15,7 +15,7 @@ export default async function DashboardPage() {
 
   const { data } = await supabase
     .from("bookmark_collections")
-    .select("data, share_slug, updated_at")
+    .select("data, share_slug, updated_at, title")
     .eq("user_id", user.id)
     .maybeSingle<Database["public"]["Tables"]["bookmark_collections"]["Row"]>();
 
@@ -25,6 +25,7 @@ export default async function DashboardPage() {
       initialDocument={data?.data ?? null}
       initialShareSlug={data?.share_slug ?? null}
       initialUpdatedAt={data?.updated_at ?? null}
+      initialSiteTitle={data?.title ?? null}
     />
   );
 }

@@ -14,6 +14,7 @@ interface DashboardShellProps {
   initialDocument: BookmarkDocument | null;
   initialShareSlug: string | null;
   initialUpdatedAt: string | null;
+  initialSiteTitle: string | null;
 }
 
 export function DashboardShell({
@@ -21,6 +22,7 @@ export function DashboardShell({
   initialDocument,
   initialShareSlug,
   initialUpdatedAt,
+  initialSiteTitle,
 }: DashboardShellProps) {
   const [document, setDocument] = useState<BookmarkDocument | null>(initialDocument);
   const [shareSlug, setShareSlug] = useState<string | null>(initialShareSlug);
@@ -33,6 +35,32 @@ export function DashboardShell({
   const [isSavingDocument, setIsSavingDocument] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  const normalizedUserEmail = email.trim();
+  const initialSiteTitleValue = (() => {
+    const fromProp = initialSiteTitle?.trim();
+    if (fromProp) return fromProp;
+    const fromMetadata = initialDocument?.metadata?.siteTitle?.trim();
+    if (fromMetadata) return fromMetadata;
+    const fromRoot = initialDocument?.root?.name?.trim();
+    if (fromRoot) return fromRoot;
+    return '我的导航站';
+  })();
+  const initialContactEmailValue = (() => {
+    const fromMetadata = initialDocument?.metadata?.contactEmail?.trim();
+    if (fromMetadata) return fromMetadata;
+    if (normalizedUserEmail) return normalizedUserEmail;
+    return '';
+  })();
+
+  const [siteTitle, setSiteTitle] = useState<string>(initialSiteTitleValue);
+  const [contactEmail, setContactEmail] = useState<string>(initialContactEmailValue);
+  const [persistedSiteTitle, setPersistedSiteTitle] = useState<string>(initialSiteTitleValue);
+  const [persistedContactEmail, setPersistedContactEmail] = useState<string>(initialContactEmailValue);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+
   const router = useRouter();
 
   useEffect(() => {
@@ -46,6 +74,14 @@ export function DashboardShell({
     return `${origin}/share/${shareSlug}`;
   }, [origin, shareSlug]);
 
+  const trimmedSiteTitle = siteTitle.trim();
+  const trimmedPersistedSiteTitle = persistedSiteTitle.trim();
+  const trimmedContactEmail = contactEmail.trim();
+  const trimmedPersistedContactEmail = persistedContactEmail.trim();
+  const settingsDirty =
+    trimmedSiteTitle !== trimmedPersistedSiteTitle || trimmedContactEmail !== trimmedPersistedContactEmail;
+  const settingsDisabled = !settingsDirty || isSavingSettings;
+
   const handleImported = (result: ImportResult) => {
     setDocument(result.document);
     setShareSlug(result.shareSlug);
@@ -55,6 +91,18 @@ export function DashboardShell({
     setIsDirty(false);
     setSaveMessage('书签数据已更新，可以开始整理顺序');
     setSaveError(null);
+
+    const importedSiteTitle = result.document.metadata?.siteTitle?.trim() ?? result.document.root?.name?.trim() ?? '';
+    const importedContactEmail = result.document.metadata?.contactEmail?.trim() ?? '';
+    const nextSiteTitle = importedSiteTitle || trimmedSiteTitle || initialSiteTitleValue;
+    const nextContactEmail = importedContactEmail || trimmedPersistedContactEmail;
+
+    setSiteTitle(nextSiteTitle);
+    setPersistedSiteTitle(nextSiteTitle);
+    setContactEmail(nextContactEmail);
+    setPersistedContactEmail(nextContactEmail);
+    setSettingsMessage(null);
+    setSettingsError(null);
   };
 
   const handleDocumentChange = (nextDocument: BookmarkDocument) => {
@@ -99,8 +147,61 @@ export function DashboardShell({
     }
   };
 
+  const handleSaveSettings = async () => {
+    if (settingsDisabled) {
+      return;
+    }
+    setIsSavingSettings(true);
+    setSettingsMessage(null);
+    setSettingsError(null);
+    try {
+      const response = await fetch('/api/bookmarks/settings', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ siteTitle, contactEmail }),
+      });
+      let payload: Record<string, unknown> = {};
+      try {
+        payload = await response.json();
+      } catch (error) {
+        payload = {};
+      }
+      if (!response.ok) {
+        const message = typeof payload.error === 'string' ? payload.error : `保存站点信息失败（${response.status}）`;
+        throw new Error(message);
+      }
+      const nextTitle = typeof payload.siteTitle === 'string' ? payload.siteTitle : '';
+      const nextEmail = typeof payload.contactEmail === 'string' ? payload.contactEmail : '';
+      if (typeof payload.updatedAt === 'string') {
+        setUpdatedAt(payload.updatedAt);
+      }
+      setPersistedSiteTitle(nextTitle);
+      setPersistedContactEmail(nextEmail);
+      setSiteTitle(nextTitle);
+      setContactEmail(nextEmail);
+      setSettingsMessage('站点信息已保存');
+      setDocument((previous) => {
+        if (!previous) return previous;
+        return {
+          ...previous,
+          metadata: {
+            ...previous.metadata,
+            siteTitle: nextTitle || null,
+            contactEmail: nextEmail || null,
+          },
+        };
+      });
+    } catch (error) {
+      setSettingsError(error instanceof Error ? error.message : '保存站点信息失败，请稍后再试');
+    } finally {
+      setIsSavingSettings(false);
+    }
+  };
+
   const handleLogout = async () => {
-    const supabase = createSupabaseBrowserClient();
+
     await supabase.auth.signOut();
     router.push('/login');
     router.refresh();
@@ -156,6 +257,65 @@ export function DashboardShell({
 
         <BookmarkImportForm onImported={handleImported} />
 
+        <section style={siteSettingsCardStyle}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <h2 style={{ margin: 0, fontSize: '20px' }}>站点信息</h2>
+            <p style={settingsDescriptionStyle}>自定义导航站标题和联系邮箱，它们会展示在导航站左上角。</p>
+          </div>
+          <div style={settingsFieldsStyle}>
+            <div style={settingsFieldStackStyle}>
+              <label htmlFor="site-title-input" style={settingsLabelStyle}>
+                导航标题
+              </label>
+              <input
+                id="site-title-input"
+                value={siteTitle}
+                onChange={(event) => {
+                  setSiteTitle(event.target.value);
+                  setSettingsMessage(null);
+                  setSettingsError(null);
+                }}
+                placeholder="请输入导航站标题"
+                style={settingsInputStyle}
+              />
+            </div>
+            <div style={settingsFieldStackStyle}>
+              <label htmlFor="contact-email-input" style={settingsLabelStyle}>
+                联系邮箱（可选）
+              </label>
+              <input
+                id="contact-email-input"
+                type="email"
+                value={contactEmail}
+                onChange={(event) => {
+                  setContactEmail(event.target.value);
+                  setSettingsMessage(null);
+                  setSettingsError(null);
+                }}
+                placeholder="对外展示的联系邮箱"
+                style={settingsInputStyle}
+              />
+              <p style={settingsHintStyle}>留一个邮箱地址，方便团队成员或访客与你取得联系。</p>
+            </div>
+          </div>
+          <div style={settingsActionRowStyle}>
+            <button
+              type="button"
+              onClick={handleSaveSettings}
+              disabled={settingsDisabled}
+              style={{
+                ...settingsSaveButtonStyle,
+                opacity: settingsDisabled ? 0.6 : 1,
+                cursor: settingsDisabled ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {isSavingSettings ? '保存中…' : '保存站点信息'}
+            </button>
+            {settingsMessage && <span style={successStyle}>{settingsMessage}</span>}
+            {settingsError && <span style={errorStyle}>{settingsError}</span>}
+          </div>
+        </section>
+
         <section style={shareCardStyle}>
           <h2 style={{ margin: '0 0 12px', fontSize: '20px' }}>分享链接</h2>
           {shareSlug ? (
@@ -207,6 +367,8 @@ export function DashboardShell({
               editable={Boolean(document)}
               onDocumentChange={handleDocumentChange}
               header={viewerHeader}
+              siteTitle={trimmedSiteTitle || undefined}
+              contactEmail={trimmedContactEmail || undefined}
             />
           </div>
         </section>
@@ -258,6 +420,71 @@ const shareCardStyle: React.CSSProperties = {
   borderRadius: '20px',
   background: 'linear-gradient(135deg, rgba(96, 165, 250, 0.18), rgba(125, 211, 252, 0.14))',
   border: '1px solid rgba(59, 130, 246, 0.25)',
+};
+
+const siteSettingsCardStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '18px',
+  padding: '24px',
+  borderRadius: '20px',
+  background: 'rgba(255, 255, 255, 0.86)',
+  border: '1px solid rgba(148, 163, 184, 0.35)',
+};
+
+const settingsDescriptionStyle: React.CSSProperties = {
+  margin: 0,
+  fontSize: '13px',
+  color: '#64748b',
+};
+
+const settingsFieldsStyle: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+  gap: '16px',
+};
+
+const settingsFieldStackStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '8px',
+};
+
+const settingsLabelStyle: React.CSSProperties = {
+  fontWeight: 600,
+  fontSize: '14px',
+  color: '#0f172a',
+};
+
+const settingsInputStyle: React.CSSProperties = {
+  padding: '12px 14px',
+  borderRadius: '12px',
+  border: '1px solid rgba(148, 163, 184, 0.5)',
+  fontSize: '14px',
+  background: 'rgba(255, 255, 255, 0.95)',
+};
+
+const settingsHintStyle: React.CSSProperties = {
+  margin: 0,
+  fontSize: '12px',
+  color: '#94a3b8',
+};
+
+const settingsActionRowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '12px',
+  flexWrap: 'wrap',
+};
+
+const settingsSaveButtonStyle: React.CSSProperties = {
+  padding: '10px 24px',
+  borderRadius: '999px',
+  border: 'none',
+  background: 'linear-gradient(135deg, #2563eb, #22d3ee)',
+  color: '#ffffff',
+  fontWeight: 600,
+  transition: 'transform 0.2s ease, opacity 0.2s ease',
 };
 
 const shareUrlBoxStyle: React.CSSProperties = {

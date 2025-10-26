@@ -16,6 +16,11 @@ export type BookmarkStatistics = {
   total_bookmarks: number;
 };
 
+export type BookmarkDocumentMetadata = {
+  siteTitle?: string | null;
+  contactEmail?: string | null;
+};
+
 export type BookmarkDocument = {
   version: number;
   generated_at: string;
@@ -23,4 +28,5 @@ export type BookmarkDocument = {
   generator: string;
   statistics: BookmarkStatistics;
   root: BookmarkNode;
+  metadata?: BookmarkDocumentMetadata;
 };

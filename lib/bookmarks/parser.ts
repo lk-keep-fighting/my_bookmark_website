@@ -145,13 +145,18 @@ export function parseBookmarksHtml(html: string, source = "import"): BookmarkDoc
   parser.end();
 
   const statistics = calculateBookmarkStatistics(root);
+  const generatedAt = new Date().toISOString();
+  const metadata = {
+    siteTitle: root.name?.trim() || "我的导航站",
+  };
 
   return {
     version: 1,
-    generated_at: new Date().toISOString(),
+    generated_at: generatedAt,
     source,
     generator: GENERATOR,
     statistics,
     root,
+    metadata,
   };
 }
