@@ -856,7 +856,6 @@ export function NavigationViewer({
                       : 'translateY(0)';
                   const nameColor = isPressing ? '#f8fafc' : '#0f172a';
                   const hostColor = isPressing ? 'rgba(226, 232, 240, 0.9)' : '#475569';
-                  const urlColor = isPressing ? '#e0f2fe' : '#2563eb';
                   const editColor = isPressing ? '#e0f2fe' : '#2563eb';
 
                   return (
@@ -982,13 +981,8 @@ export function NavigationViewer({
                         </div>
                       )}
                       {node.url && (
-                        <a
-                          href={node.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          style={{ ...bookmarkUrlStyle, color: urlColor }}
-                        >
-                          {node.url}
+                        <a href={node.url} target="_blank" rel="noopener noreferrer" style={bookmarkVisitLinkStyle}>
+                          访问网页
                         </a>
                       )}
                     </div>
@@ -1985,6 +1979,8 @@ const bookmarkGridStyle: React.CSSProperties = {
   gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
   gap: '18px',
   alignItems: 'stretch',
+  position: 'relative',
+  zIndex: 0,
 };
 
 const bookmarkItemStyle: React.CSSProperties = {
@@ -1997,6 +1993,8 @@ const bookmarkItemStyle: React.CSSProperties = {
   boxShadow: '0 14px 32px rgba(15, 23, 42, 0.08)',
   transition: 'transform 0.25s ease, border 0.2s ease, box-shadow 0.25s ease, background 0.25s ease',
   height: '100%',
+  position: 'relative',
+  zIndex: 0,
 };
 
 const bookmarkTitleRowStyle: React.CSSProperties = {
@@ -2040,12 +2038,20 @@ const bookmarkHostStyle: React.CSSProperties = {
   transition: 'color 0.2s ease',
 };
 
-
-const bookmarkUrlStyle: React.CSSProperties = {
+const bookmarkVisitLinkStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '6px',
+  alignSelf: 'flex-start',
   color: '#2563eb',
   fontSize: '13px',
-  wordBreak: 'break-all',
-  transition: 'color 0.2s ease',
+  fontWeight: 600,
+  textDecoration: 'none',
+  padding: '6px 10px',
+  borderRadius: '999px',
+  border: '1px solid rgba(37, 99, 235, 0.25)',
+  background: 'rgba(37, 99, 235, 0.08)',
+  transition: 'background 0.2s ease, border 0.2s ease, color 0.2s ease',
 };
 
 const editingContainerStyle: React.CSSProperties = {
