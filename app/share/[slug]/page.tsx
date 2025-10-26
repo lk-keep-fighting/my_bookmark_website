@@ -5,6 +5,9 @@ import { NavigationViewer } from "@/components/navigation-viewer";
 import type { BookmarkDocument } from "@/lib/bookmarks";
 import { formatDate } from "@/lib/utils";
 
+export const revalidate = 0;
+export const dynamic = "force-dynamic";
+
 interface SharePageProps {
   params: { slug: string };
 }
