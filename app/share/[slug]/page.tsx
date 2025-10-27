@@ -2,7 +2,13 @@ import type React from "react";
 import { notFound } from "next/navigation";
 import { getSupabaseAdminClient } from "@/lib/supabase/admin";
 import { NavigationViewer } from "@/components/navigation-viewer";
-import type { BookmarkDocument } from "@/lib/bookmarks";
+import {
+  calculateBookmarkStatistics,
+  cloneBookmarkNode,
+  findFolderWithTrail,
+  type BookmarkDocument,
+  type BookmarkNode,
+} from "@/lib/bookmarks";
 import { formatDate } from "@/lib/utils";
 
 export const revalidate = 0;
@@ -14,42 +20,95 @@ interface SharePageProps {
 
 export default async function SharePage({ params }: SharePageProps) {
   const admin = getSupabaseAdminClient();
-  const { data, error } = await admin
-    .from("bookmark_collections")
-    .select("data, updated_at, title, user_id")
+  const { data: shareSite, error: shareSiteError } = await admin
+    .from("share_sites")
+    .select("id, name, share_slug, folder_ids, collection_id")
     .eq("share_slug", params.slug)
     .maybeSingle();
 
-  if (error || !data || !data.data) {
+  if (shareSiteError || !shareSite) {
     notFound();
   }
 
-  const document = data.data as BookmarkDocument;
-  const metadata = document.metadata ?? {};
-  const siteTitle =
-    metadata.siteTitle?.trim() ?? data.title?.trim() ?? document.root.name?.trim() ?? "书签导航";
-  let contactEmail = metadata.contactEmail?.trim() ?? "";
+  const { data: collection, error: collectionError } = await admin
+    .from("bookmark_collections")
+    .select("data, updated_at, title, user_id")
+    .eq("id", shareSite.collection_id)
+    .maybeSingle();
 
-  if (!contactEmail && data.user_id) {
+  if (collectionError || !collection || !collection.data) {
+    notFound();
+  }
+
+  const originalDocument = collection.data as BookmarkDocument;
+  const folderIds = Array.isArray(shareSite.folder_ids) ? shareSite.folder_ids : [];
+  const folderLookups = folderIds
+    .map((folderId) => findFolderWithTrail(originalDocument.root, folderId))
+    .filter((lookup): lookup is NonNullable<typeof lookup> => Boolean(lookup));
+
+  if (folderLookups.length === 0) {
+    notFound();
+  }
+
+  const clonedFolders = folderLookups.map(
+    (lookup) => cloneBookmarkNode(lookup.node) as BookmarkNode & { type: "folder" },
+  );
+
+  const siteTitleCandidate =
+    shareSite.name?.trim() ||
+    originalDocument.metadata?.siteTitle?.trim() ||
+    collection.title?.trim() ||
+    folderLookups[0]?.node.name?.trim() ||
+    originalDocument.root.name?.trim() ||
+    "书签导航";
+
+  const shareRoot: BookmarkNode = {
+    type: "folder",
+    id: `${shareSite.share_slug}-root`,
+    name: siteTitleCandidate,
+    children: clonedFolders,
+  };
+
+  const sharedDocument: BookmarkDocument = {
+    ...originalDocument,
+    root: shareRoot,
+    metadata: {
+      ...originalDocument.metadata,
+      siteTitle: siteTitleCandidate,
+    },
+    statistics: calculateBookmarkStatistics(shareRoot),
+  };
+
+  let contactEmail = sharedDocument.metadata?.contactEmail?.trim() ?? "";
+
+  if (!contactEmail && collection.user_id) {
     try {
-      const { data: owner } = await admin.auth.admin.getUserById(data.user_id);
+      const { data: owner } = await admin.auth.admin.getUserById(collection.user_id);
       contactEmail = owner?.user?.email?.trim() ?? "";
     } catch {
       // ignore missing owner email
     }
   }
 
+  const finalDocument: BookmarkDocument = {
+    ...sharedDocument,
+    metadata: {
+      ...sharedDocument.metadata,
+      contactEmail: contactEmail ? contactEmail : null,
+    },
+  };
+
   const viewerHeader = (
-    <span style={shareUpdatedStyle}>最近更新：{formatDate(data.updated_at)}</span>
+    <span style={shareUpdatedStyle}>最近更新：{formatDate(collection.updated_at)}</span>
   );
 
   return (
     <main style={shareMainStyle}>
       <section style={viewerSectionStyle}>
         <NavigationViewer
-          document={document}
+          document={finalDocument}
           emptyHint="暂无可展示的书签"
-          siteTitle={siteTitle}
+          siteTitle={siteTitleCandidate}
           contactEmail={contactEmail || undefined}
           header={viewerHeader}
         />
