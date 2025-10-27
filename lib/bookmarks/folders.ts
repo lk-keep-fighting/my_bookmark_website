@@ -74,7 +74,7 @@ export function findFolderWithTrail(root: BookmarkNode, targetId: string | null 
 
     if (node.id === targetId) {
       return {
-        node,
+        node: node as BookmarkNode & { type: "folder" },
         trail: nextTrail,
       };
     }
