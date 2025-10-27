@@ -10,6 +10,8 @@ interface NavigationViewerProps {
   emptyHint?: string;
   header?: React.ReactNode;
   editable?: boolean;
+  siteTitle?: string | null;
+  contactEmail?: string | null;
   onDocumentChange?: (nextDocument: BookmarkDocument) => void;
 }
 
@@ -88,6 +90,8 @@ export function NavigationViewer({
   emptyHint,
   header,
   editable = false,
+  siteTitle,
+  contactEmail,
   onDocumentChange,
 }: NavigationViewerProps) {
   const navigationIndex = useMemo<NavigationIndex>(() => {
@@ -103,6 +107,10 @@ export function NavigationViewer({
   const [query, setQuery] = useState('');
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [hoveredBookmarkId, setHoveredBookmarkId] = useState<string | null>(null);
+  const [pressingBookmarkId, setPressingBookmarkId] = useState<string | null>(null);
+  const [isRenamingFolder, setIsRenamingFolder] = useState(false);
+  const [folderRenameValue, setFolderRenameValue] = useState('');
   const [editingBookmarkId, setEditingBookmarkId] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState('');
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
@@ -111,6 +119,7 @@ export function NavigationViewer({
   const [aiError, setAiError] = useState<string | null>(null);
   const [collapsedFolderIds, setCollapsedFolderIds] = useState<Set<string>>(() => new Set());
   const previousRootIdRef = useRef<string | null>(null);
+  const folderRenameInputRef = useRef<HTMLInputElement | null>(null);
 
   const trimmedQuery = query.trim();
   const normalizedQuery = trimmedQuery.toLowerCase();
@@ -256,10 +265,34 @@ export function NavigationViewer({
     return selectedFolderId ?? folderEntries[0]?.id ?? null;
   }, [bookmarkDocument, searchActive, visibleFolderEntries, selectedFolderId, folderEntries]);
 
+  useEffect(() => {
+    setHoveredBookmarkId(null);
+    setPressingBookmarkId(null);
+  }, [bookmarkDocument, activeFolderId, searchActive]);
+
   const activeFolderEntry = useMemo(() => {
     if (!activeFolderId) return null;
     return folderEntries.find((entry) => entry.id === activeFolderId) ?? null;
   }, [activeFolderId, folderEntries]);
+
+  useEffect(() => {
+    if (!activeFolderEntry) {
+      setIsRenamingFolder(false);
+      setFolderRenameValue('');
+      return;
+    }
+    setFolderRenameValue(activeFolderEntry.name ?? '');
+    setIsRenamingFolder(false);
+  }, [activeFolderEntry?.id, activeFolderEntry?.name]);
+
+  useEffect(() => {
+    if (isRenamingFolder && folderRenameInputRef.current) {
+      folderRenameInputRef.current.focus();
+      folderRenameInputRef.current.select();
+    }
+  }, [isRenamingFolder]);
+
+  const originalFolderName = activeFolderEntry?.name ?? '';
 
   const activeFolderNode = useMemo(() => {
     if (!bookmarkDocument || !activeFolderId) {
@@ -304,6 +337,45 @@ export function NavigationViewer({
   const totalSearchMatches = searchActive ? searchResult?.matches.length ?? 0 : 0;
 
   const canReorder = editable && !searchActive && bookmarkChildren.length > 1;
+
+  const handleStartFolderRename = useCallback(() => {
+    if (!editable || !activeFolderEntry) {
+      return;
+    }
+    setFolderRenameValue(activeFolderEntry.name ?? '');
+    setIsRenamingFolder(true);
+  }, [editable, activeFolderEntry]);
+
+  const handleCancelFolderRename = useCallback(() => {
+    setFolderRenameValue(originalFolderName);
+    setIsRenamingFolder(false);
+  }, [originalFolderName]);
+
+  const handleCommitFolderRename = useCallback(() => {
+    if (!editable || !bookmarkDocument || !activeFolderId || !activeFolderEntry) {
+      setFolderRenameValue(originalFolderName);
+      setIsRenamingFolder(false);
+      return;
+    }
+    const trimmed = folderRenameValue.trim();
+    const currentName = activeFolderEntry.name ?? '';
+    if (!trimmed) {
+      setFolderRenameValue(currentName);
+      setIsRenamingFolder(false);
+      return;
+    }
+    if (trimmed === currentName) {
+      setFolderRenameValue(currentName);
+      setIsRenamingFolder(false);
+      return;
+    }
+    const nextDocument = renameFolderInDocument(bookmarkDocument, activeFolderId, trimmed);
+    if (onDocumentChange && nextDocument !== bookmarkDocument) {
+      onDocumentChange(nextDocument);
+    }
+    setFolderRenameValue(trimmed);
+    setIsRenamingFolder(false);
+  }, [editable, bookmarkDocument, activeFolderId, activeFolderEntry, folderRenameValue, onDocumentChange, originalFolderName]);
 
   const handleToggleFolder = useCallback((folderId: string) => {
     setCollapsedFolderIds((previous) => {
@@ -464,6 +536,24 @@ export function NavigationViewer({
     );
   }
 
+  const resolvedSiteTitle = (() => {
+    const fromProp = siteTitle?.trim();
+    if (fromProp) return fromProp;
+    const fromMetadata = bookmarkDocument.metadata?.siteTitle?.trim();
+    if (fromMetadata) return fromMetadata;
+    const fromRoot = bookmarkDocument.root.name?.trim();
+    if (fromRoot) return fromRoot;
+    return '我的导航站';
+  })();
+
+  const resolvedContactEmail = (() => {
+    const fromProp = contactEmail?.trim();
+    if (fromProp) return fromProp;
+    const fromMetadata = bookmarkDocument.metadata?.contactEmail?.trim();
+    if (fromMetadata) return fromMetadata;
+    return '';
+  })();
+
   const activeFolderName =
     activeFolderEntry?.name ?? (searchActive ? '搜索结果' : bookmarkDocument.root.name);
 
@@ -544,18 +634,26 @@ export function NavigationViewer({
 
   return (
     <div style={outerWrapperStyle}>
+      <div style={brandingContainerStyle}>
+        <div style={brandingTitleGroupStyle}>
+          <h1 style={brandingTitleStyle}>{resolvedSiteTitle}</h1>
+          {resolvedContactEmail && (
+            <a href={`mailto:${resolvedContactEmail}`} style={brandingEmailStyle}>
+              {resolvedContactEmail}
+            </a>
+          )}
+        </div>
+        <div style={brandingMetaStyle}>
+          <span style={brandingMetaItemStyle}>{bookmarkDocument.statistics.total_bookmarks} 个网页</span>
+          <span style={brandingMetaDotStyle} />
+          <span style={brandingMetaItemStyle}>{bookmarkDocument.statistics.total_folders} 个目录</span>
+        </div>
+      </div>
       <div style={layoutStyle}>
         <aside style={sidebarStyle}>
-          <div style={sidebarHeaderStyle}>
-            <span style={sidebarBadgeStyle}>书签目录</span>
-            <h2 style={sidebarTitleStyle}>{bookmarkDocument.root.name}</h2>
-            <p style={sidebarSubtitleStyle}>
-              共 {bookmarkDocument.statistics.total_folders} 个目录 · {bookmarkDocument.statistics.total_bookmarks} 个网页
-            </p>
-            {searchActive && (
-              <span style={sidebarSearchInfoStyle}>搜索结果覆盖 {visibleFolderEntries.length} 个目录</span>
-            )}
-          </div>
+          {searchActive && (
+            <div style={sidebarSearchInfoStyle}>搜索结果覆盖 {visibleFolderEntries.length} 个目录</div>
+          )}
           <div style={sidebarListStyle}>
             {searchActive && visibleFolderEntries.length === 0 ? (
               <div style={sidebarEmptyStyle}>未找到包含当前搜索结果的目录</div>
@@ -652,8 +750,57 @@ export function NavigationViewer({
           )}
 
           <div style={contentHeaderStyle}>
-            <div>
-              <h3 style={contentTitleStyle}>{activeFolderName}</h3>
+            <div style={contentTitleColumnStyle}>
+              <div style={contentTitleRowStyle}>
+                {isRenamingFolder ? (
+                  <div style={folderRenameRowStyle}>
+                    <input
+                      ref={folderRenameInputRef}
+                      value={folderRenameValue}
+                      onChange={(event) => setFolderRenameValue(event.target.value)}
+                      onBlur={handleCommitFolderRename}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          handleCommitFolderRename();
+                        } else if (event.key === 'Escape') {
+                          event.preventDefault();
+                          handleCancelFolderRename();
+                        }
+                      }}
+                      placeholder="输入目录名称"
+                      style={folderRenameInputStyle}
+                    />
+                    <div style={folderRenameActionsStyle}>
+                      <button
+                        type="button"
+                        style={editSaveButtonStyle}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={handleCommitFolderRename}
+                      >
+                        保存
+                      </button>
+                      <button
+                        type="button"
+                        style={editCancelButtonStyle}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={handleCancelFolderRename}
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <h3 style={contentTitleStyle}>{activeFolderName}</h3>
+                    {editable && activeFolderEntry && (
+                      <button type="button" onClick={handleStartFolderRename} style={renameFolderButtonStyle}>
+                        重命名目录
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
               <p style={contentSubtitleStyle}>
                 {searchActive
                   ? `匹配到 ${activeFolderBookmarkCount} 个网页`
@@ -681,13 +828,45 @@ export function NavigationViewer({
                   const { node } = card;
                   const isEditing = editingBookmarkId === node.id;
                   const host = node.url ? extractHostname(node.url) : '';
+                  const isDraggingCurrent = draggingId === node.id;
+                  const isHovered = !isDraggingCurrent && hoveredBookmarkId === node.id;
+                  const isPressing = !isDraggingCurrent && pressingBookmarkId === node.id;
+                  const isDragOver = dragOverId === node.id;
+                  const cardBorder = isDragOver
+                    ? '1px dashed rgba(59, 130, 246, 0.8)'
+                    : isPressing
+                      ? '1px solid rgba(14, 165, 233, 0.55)'
+                      : isHovered
+                        ? '1px solid rgba(59, 130, 246, 0.45)'
+                        : '1px solid rgba(148, 163, 184, 0.28)';
+                  const cardBackground = isPressing
+                    ? 'linear-gradient(135deg, rgba(37, 99, 235, 0.92), rgba(14, 165, 233, 0.88))'
+                    : isHovered
+                      ? 'linear-gradient(135deg, rgba(59, 130, 246, 0.16), rgba(14, 165, 233, 0.18))'
+                      : bookmarkItemStyle.background;
+                  const cardShadow = isPressing
+                    ? '0 20px 44px rgba(12, 74, 110, 0.35)'
+                    : isHovered
+                      ? '0 24px 48px rgba(30, 64, 175, 0.2)'
+                      : bookmarkItemStyle.boxShadow;
+                  const cardTransform = isPressing
+                    ? 'translateY(2px) scale(0.98)'
+                    : isHovered
+                      ? 'translateY(-6px) scale(1.02)'
+                      : 'translateY(0)';
+                  const nameColor = isPressing ? '#f8fafc' : '#0f172a';
+                  const hostColor = isPressing ? 'rgba(226, 232, 240, 0.9)' : '#475569';
+                  const editColor = isPressing ? '#e0f2fe' : '#2563eb';
+
                   return (
                     <div
                       key={node.id}
                       draggable={canReorder && !isEditing}
                       onDragStart={(event) => {
                         if (!canReorder || isEditing) return;
+                        setPressingBookmarkId(null);
                         setDraggingId(node.id);
+                        setHoveredBookmarkId(node.id);
                         event.dataTransfer.effectAllowed = 'move';
                         event.dataTransfer.setData('text/plain', node.id);
                       }}
@@ -702,15 +881,47 @@ export function NavigationViewer({
                       onDragEnd={() => {
                         setDraggingId(null);
                         setDragOverId(null);
+                        setHoveredBookmarkId(null);
+                        setPressingBookmarkId(null);
+                      }}
+                      onMouseEnter={() => {
+                        if (isEditing) return;
+                        setHoveredBookmarkId(node.id);
+                      }}
+                      onMouseLeave={() => {
+                        setHoveredBookmarkId((current) => (current === node.id ? null : current));
+                        setPressingBookmarkId((current) => (current === node.id ? null : current));
+                      }}
+                      onFocus={() => {
+                        if (isEditing) return;
+                        setHoveredBookmarkId(node.id);
+                      }}
+                      onBlur={() => {
+                        setHoveredBookmarkId((current) => (current === node.id ? null : current));
+                        setPressingBookmarkId((current) => (current === node.id ? null : current));
+                      }}
+                      onMouseDown={() => {
+                        if (isEditing) return;
+                        setPressingBookmarkId(node.id);
+                      }}
+                      onMouseUp={() => {
+                        setPressingBookmarkId((current) => (current === node.id ? null : current));
+                      }}
+                      onTouchStart={() => {
+                        if (isEditing) return;
+                        setPressingBookmarkId(node.id);
+                      }}
+                      onTouchEnd={() => {
+                        setPressingBookmarkId((current) => (current === node.id ? null : current));
                       }}
                       style={{
                         ...bookmarkItemStyle,
-                        opacity: draggingId === node.id ? 0.6 : 1,
-                        border:
-                          dragOverId === node.id
-                            ? '1px dashed rgba(59, 130, 246, 0.8)'
-                            : '1px solid rgba(148, 163, 184, 0.35)',
+                        opacity: isDraggingCurrent ? 0.6 : 1,
+                        border: cardBorder,
                         cursor: canReorder ? 'grab' : 'default',
+                        background: cardBackground,
+                        boxShadow: cardShadow,
+                        transform: cardTransform,
                       }}
                     >
                       {isEditing ? (
@@ -752,11 +963,11 @@ export function NavigationViewer({
                         </div>
                       ) : (
                         <div style={bookmarkTitleRowStyle}>
-                          <span style={bookmarkNameStyle}>{node.name?.trim() || '未命名网页'}</span>
+                          <span style={{ ...bookmarkNameStyle, color: nameColor }}>{node.name?.trim() || '未命名网页'}</span>
                           {editable && (
                             <button
                               type="button"
-                              style={editButtonStyle}
+                              style={{ ...editButtonStyle, color: editColor }}
                               onClick={() => handleStartEditing(node.id, node.name ?? '')}
                             >
                               编辑名称
@@ -766,12 +977,12 @@ export function NavigationViewer({
                       )}
                       {host && (
                         <div style={bookmarkMetaRowStyle}>
-                          <span style={bookmarkHostStyle}>{host}</span>
+                          <span style={{ ...bookmarkHostStyle, color: hostColor }}>{host}</span>
                         </div>
                       )}
                       {node.url && (
-                        <a href={node.url} target="_blank" rel="noopener noreferrer" style={bookmarkUrlStyle}>
-                          {node.url}
+                        <a href={node.url} target="_blank" rel="noopener noreferrer" style={bookmarkVisitLinkStyle}>
+                          访问网页
                         </a>
                       )}
                     </div>
@@ -1035,6 +1246,46 @@ function renameBookmarkInNode(node: BookmarkNode, bookmarkId: string, nextName: 
   };
 }
 
+function renameFolderInDocument(document: BookmarkDocument, folderId: string, nextName: string): BookmarkDocument {
+  const updatedRoot = renameFolderInNode(document.root, folderId, nextName);
+  if (updatedRoot === document.root) {
+    return document;
+  }
+  return {
+    ...document,
+    root: updatedRoot,
+  };
+}
+
+function renameFolderInNode(node: BookmarkNode, folderId: string, nextName: string): BookmarkNode {
+  if (node.type !== 'folder') {
+    return node;
+  }
+  const existingChildren = node.children ?? [];
+  let childrenChanged = false;
+  const nextChildren = existingChildren.map((child) => {
+    if (child.type !== 'folder') {
+      return child;
+    }
+    const updatedChild = renameFolderInNode(child, folderId, nextName);
+    if (updatedChild !== child) {
+      childrenChanged = true;
+      return updatedChild;
+    }
+    return child;
+  });
+  const isTarget = node.id === folderId;
+  const nameChanged = isTarget && node.name !== nextName;
+  if (!nameChanged && !childrenChanged) {
+    return node;
+  }
+  return {
+    ...node,
+    name: nameChanged ? nextName : node.name,
+    children: childrenChanged ? nextChildren : node.children,
+  };
+}
+
 function createAiOrganizedFolder(strategyId: AiStrategyId, matches: BookmarkMatch[]): BookmarkNode | null {
   if (matches.length === 0) {
     return null;
@@ -1244,71 +1495,105 @@ const outerWrapperStyle: React.CSSProperties = {
   flex: '1 1 auto',
   width: '100%',
   display: 'flex',
-  minHeight: '520px',
-};
-
-const layoutStyle: React.CSSProperties = {
-  display: 'flex',
-  gap: '24px',
-  width: '100%',
-  minHeight: '520px',
-  flexWrap: 'wrap',
-};
-
-const sidebarStyle: React.CSSProperties = {
-  width: '280px',
-  minWidth: '240px',
-  flex: '0 0 280px',
-  display: 'flex',
   flexDirection: 'column',
-  gap: '18px',
-  background: 'rgba(255, 255, 255, 0.95)',
-  borderRadius: '24px',
-  padding: '24px 20px',
-  boxShadow: '0 18px 45px rgba(15, 23, 42, 0.07)',
+  gap: '20px',
+  minHeight: '520px',
 };
 
-const sidebarHeaderStyle: React.CSSProperties = {
+const brandingContainerStyle: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'flex-start',
+  gap: '16px',
+  flexWrap: 'wrap',
+  padding: '4px 4px 0',
+};
+
+const brandingTitleGroupStyle: React.CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   gap: '6px',
 };
 
-const sidebarBadgeStyle: React.CSSProperties = {
-  alignSelf: 'flex-start',
-  padding: '4px 10px',
-  borderRadius: '999px',
-  background: 'rgba(59, 130, 246, 0.12)',
-  color: '#1d4ed8',
-  fontSize: '12px',
-  fontWeight: 600,
-};
-
-const sidebarTitleStyle: React.CSSProperties = {
+const brandingTitleStyle: React.CSSProperties = {
   margin: 0,
-  fontSize: '20px',
+  fontSize: '24px',
+  fontWeight: 700,
   color: '#0f172a',
+  letterSpacing: '-0.2px',
 };
 
-const sidebarSubtitleStyle: React.CSSProperties = {
-  margin: 0,
+const brandingEmailStyle: React.CSSProperties = {
+  fontSize: '13px',
+  color: '#2563eb',
+  textDecoration: 'none',
+  fontWeight: 500,
+};
+
+const brandingMetaStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '10px',
   fontSize: '13px',
   color: '#64748b',
+  fontWeight: 500,
+};
+
+const brandingMetaItemStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '6px',
+};
+
+const brandingMetaDotStyle: React.CSSProperties = {
+  width: '6px',
+  height: '6px',
+  borderRadius: '50%',
+  background: 'rgba(148, 163, 184, 0.6)',
+};
+
+const layoutStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: '20px',
+  width: '100%',
+  minHeight: '520px',
+  flexWrap: 'wrap',
+  alignItems: 'flex-start',
+};
+
+const sidebarStyle: React.CSSProperties = {
+  width: '260px',
+  minWidth: '220px',
+  flex: '0 0 260px',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '12px',
+  background: 'rgba(248, 250, 252, 0.82)',
+  borderRadius: '20px',
+  padding: '18px 16px',
+  border: '1px solid rgba(148, 163, 184, 0.3)',
+  boxShadow: '0 14px 32px rgba(15, 23, 42, 0.06)',
 };
 
 const sidebarSearchInfoStyle: React.CSSProperties = {
   fontSize: '12px',
   color: '#2563eb',
+  fontWeight: 600,
+  padding: '8px 10px',
+  borderRadius: '12px',
+  background: 'rgba(37, 99, 235, 0.08)',
+  margin: '0 0 4px',
 };
 
 const sidebarListStyle: React.CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
-  gap: '4px',
+  gap: '8px',
   overflowY: 'auto',
-  paddingRight: '6px',
+  paddingRight: '4px',
   maxHeight: '100%',
   flex: '1 1 auto',
+  marginTop: '4px',
 };
 
 const sidebarEmptyStyle: React.CSSProperties = {
@@ -1419,10 +1704,10 @@ const contentStyle: React.CSSProperties = {
   flexDirection: 'column',
   gap: '16px',
   minWidth: 0,
-  background: 'rgba(255, 255, 255, 0.97)',
-  borderRadius: '28px',
-  padding: '28px 32px',
-  boxShadow: '0 18px 45px rgba(15, 23, 42, 0.07)',
+  background: 'rgba(255, 255, 255, 0.92)',
+  borderRadius: '24px',
+  padding: '26px 30px',
+  boxShadow: '0 18px 40px rgba(15, 23, 42, 0.08)',
 };
 
 const headerContainerStyle: React.CSSProperties = {
@@ -1593,19 +1878,71 @@ const contentHeaderStyle: React.CSSProperties = {
   flexWrap: 'wrap',
 };
 
+const contentTitleColumnStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '6px',
+  flex: '1 1 auto',
+  minWidth: 0,
+};
+
+const contentTitleRowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '12px',
+  flexWrap: 'wrap',
+};
+
 const contentTitleStyle: React.CSSProperties = {
   margin: 0,
-  fontSize: '24px',
+  fontSize: '20px',
   color: '#0f172a',
 };
 
 const contentSubtitleStyle: React.CSSProperties = {
   margin: '6px 0 0',
-  fontSize: '14px',
+  fontSize: '13px',
   color: '#64748b',
   display: 'flex',
   flexWrap: 'wrap',
   gap: '6px',
+};
+
+const renameFolderButtonStyle: React.CSSProperties = {
+  padding: '6px 14px',
+  borderRadius: '999px',
+  border: '1px solid rgba(37, 99, 235, 0.35)',
+  background: 'white',
+  color: '#2563eb',
+  fontSize: '13px',
+  fontWeight: 600,
+  cursor: 'pointer',
+  transition: 'background 0.2s ease, border 0.2s ease, color 0.2s ease',
+};
+
+const folderRenameRowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '12px',
+  flexWrap: 'wrap',
+  width: '100%',
+};
+
+const folderRenameInputStyle: React.CSSProperties = {
+  padding: '9px 14px',
+  borderRadius: '12px',
+  border: '1px solid rgba(148, 163, 184, 0.5)',
+  fontSize: '16px',
+  fontWeight: 600,
+  minWidth: '200px',
+  background: 'rgba(255, 255, 255, 0.96)',
+};
+
+const folderRenameActionsStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '8px',
+  flexWrap: 'wrap',
 };
 
 
@@ -1640,8 +1977,10 @@ const bookmarkListWrapperStyle: React.CSSProperties = {
 const bookmarkGridStyle: React.CSSProperties = {
   display: 'grid',
   gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
-  gap: '16px',
+  gap: '18px',
   alignItems: 'stretch',
+  position: 'relative',
+  zIndex: 0,
 };
 
 const bookmarkItemStyle: React.CSSProperties = {
@@ -1650,9 +1989,12 @@ const bookmarkItemStyle: React.CSSProperties = {
   gap: '10px',
   borderRadius: '18px',
   padding: '16px 18px',
-  background: 'linear-gradient(140deg, rgba(248, 250, 252, 0.96), rgba(255, 255, 255, 0.98))',
-  transition: 'transform 0.2s ease, border 0.2s ease, box-shadow 0.2s ease',
+  background: 'linear-gradient(140deg, rgba(248, 250, 252, 0.95), rgba(255, 255, 255, 0.98))',
+  boxShadow: '0 14px 32px rgba(15, 23, 42, 0.08)',
+  transition: 'transform 0.25s ease, border 0.2s ease, box-shadow 0.25s ease, background 0.25s ease',
   height: '100%',
+  position: 'relative',
+  zIndex: 0,
 };
 
 const bookmarkTitleRowStyle: React.CSSProperties = {
@@ -1669,6 +2011,7 @@ const bookmarkNameStyle: React.CSSProperties = {
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
+  transition: 'color 0.2s ease',
 };
 
 const editButtonStyle: React.CSSProperties = {
@@ -1678,6 +2021,7 @@ const editButtonStyle: React.CSSProperties = {
   fontSize: '13px',
   fontWeight: 600,
   cursor: 'pointer',
+  transition: 'color 0.2s ease',
 };
 
 const bookmarkMetaRowStyle: React.CSSProperties = {
@@ -1691,13 +2035,23 @@ const bookmarkHostStyle: React.CSSProperties = {
   fontSize: '13px',
   color: '#475569',
   fontWeight: 500,
+  transition: 'color 0.2s ease',
 };
 
-
-const bookmarkUrlStyle: React.CSSProperties = {
+const bookmarkVisitLinkStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '6px',
+  alignSelf: 'flex-start',
   color: '#2563eb',
   fontSize: '13px',
-  wordBreak: 'break-all',
+  fontWeight: 600,
+  textDecoration: 'none',
+  padding: '6px 10px',
+  borderRadius: '999px',
+  border: '1px solid rgba(37, 99, 235, 0.25)',
+  background: 'rgba(37, 99, 235, 0.08)',
+  transition: 'background 0.2s ease, border 0.2s ease, color 0.2s ease',
 };
 
 const editingContainerStyle: React.CSSProperties = {
