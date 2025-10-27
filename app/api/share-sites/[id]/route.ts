@@ -4,16 +4,12 @@ import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import type { Database } from "@/lib/supabase/types";
 import { getSupabaseAdminClient } from "@/lib/supabase/admin";
 import { findFolderWithTrail, type BookmarkDocument } from "@/lib/bookmarks";
+import { mapShareSiteRow, type ShareSiteRow } from "@/lib/share-sites";
 
 interface ShareSitePayload {
   name?: string;
   folderId?: string;
 }
-
-type ShareSiteSummary = Pick<
-  Database["public"]["Tables"]["share_sites"]["Row"],
-  "id" | "name" | "share_slug" | "folder_id" | "created_at" | "updated_at"
->;
 
 export async function PUT(request: Request, { params }: { params: { id: string } }) {
   const supabase = createRouteHandlerClient<Database>({ cookies });
@@ -103,13 +99,13 @@ export async function PUT(request: Request, { params }: { params: { id: string }
     .update(updates)
     .eq("id", existing.id)
     .select("id, name, share_slug, folder_id, created_at, updated_at")
-    .single<ShareSiteSummary>();
+    .single<ShareSiteRow>();
 
   if (updateError) {
     return NextResponse.json({ error: updateError.message }, { status: 500 });
   }
 
-  return NextResponse.json({ item: updated });
+  return NextResponse.json({ item: updated ? mapShareSiteRow(updated) : null });
 }
 
 export async function DELETE(_request: Request, { params }: { params: { id: string } }) {

@@ -5,24 +5,15 @@ import type React from 'react';
 import { useRouter } from 'next/navigation';
 import {
   collectFolderOptions,
-  findFolderWithTrail,
   formatFolderTrail,
   type BookmarkDocument,
   type FolderOption,
 } from '@/lib/bookmarks';
 import { formatDate } from '@/lib/utils';
 import { createSupabaseBrowserClient } from '@/lib/supabase/browser';
+import { type ShareSiteSummary } from '@/lib/share-sites';
 import { BookmarkImportForm, type ImportResult } from './import-form';
 import { NavigationViewer } from './navigation-viewer';
-
-type ShareSiteSummary = {
-  id: string;
-  name: string;
-  shareSlug: string;
-  folderId: string;
-  createdAt: string;
-  updatedAt: string;
-};
 
 interface DashboardShellProps {
   email: string;
@@ -151,7 +142,7 @@ export function DashboardShell({
     setSaveError(null);
     setShareSitesMessage('导航站已同步，请按需创建或更新分享站');
     setShareSitesError(null);
-    refreshShareSites();
+    void refreshShareSites();
 
     const importedSiteTitle = result.document.metadata?.siteTitle?.trim() ?? result.document.root?.name?.trim() ?? '';
     const importedContactEmail = result.document.metadata?.contactEmail?.trim() ?? '';

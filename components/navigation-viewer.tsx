@@ -283,7 +283,7 @@ export function NavigationViewer({
     }
     setFolderRenameValue(activeFolderEntry.name ?? '');
     setIsRenamingFolder(false);
-  }, [activeFolderEntry?.id, activeFolderEntry?.name]);
+  }, [activeFolderEntry]);
 
   useEffect(() => {
     if (isRenamingFolder && folderRenameInputRef.current) {

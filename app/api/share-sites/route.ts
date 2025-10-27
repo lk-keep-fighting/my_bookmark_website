@@ -5,16 +5,17 @@ import type { Database } from "@/lib/supabase/types";
 import { generateShareSlug } from "@/lib/utils";
 import { getSupabaseAdminClient } from "@/lib/supabase/admin";
 import { findFolderWithTrail, type BookmarkDocument } from "@/lib/bookmarks";
+import {
+  mapShareSiteRow,
+  mapShareSiteRows,
+  type ShareSiteRow,
+  type ShareSiteSummary,
+} from "@/lib/share-sites";
 
 interface ShareSitePayload {
   name?: string;
   folderId?: string;
 }
-
-type ShareSiteSummary = Pick<
-  Database["public"]["Tables"]["share_sites"]["Row"],
-  "id" | "name" | "share_slug" | "folder_id" | "created_at" | "updated_at"
->;
 
 export async function GET() {
   const supabase = createRouteHandlerClient<Database>({ cookies });
@@ -41,7 +42,7 @@ export async function GET() {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ items: (data ?? []) as ShareSiteSummary[] });
+  return NextResponse.json({ items: mapShareSiteRows(data as ShareSiteRow[] | null) });
 }
 
 export async function POST(request: Request) {
@@ -115,10 +116,10 @@ export async function POST(request: Request) {
       .from("share_sites")
       .insert({ ...baseInsert, share_slug: shareSlug })
       .select("id, name, share_slug, folder_id, created_at, updated_at")
-      .single<ShareSiteSummary>();
+      .single<ShareSiteRow>();
 
     if (!insertError && insertData) {
-      inserted = insertData;
+      inserted = mapShareSiteRow(insertData);
       break;
     }
 

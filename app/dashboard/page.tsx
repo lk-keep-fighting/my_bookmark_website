@@ -2,11 +2,7 @@ import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { DashboardShell } from "@/components/dashboard-shell";
 import type { Database } from "@/lib/supabase/types";
-
-type ShareSiteSummary = Pick<
-  Database["public"]["Tables"]["share_sites"]["Row"],
-  "id" | "name" | "share_slug" | "folder_id" | "created_at" | "updated_at"
->;
+import { mapShareSiteRows, type ShareSiteRow } from "@/lib/share-sites";
 
 export default async function DashboardPage() {
   const supabase = createSupabaseServerClient();
@@ -30,7 +26,7 @@ export default async function DashboardPage() {
     .eq("user_id", user.id)
     .order("created_at", { ascending: true });
 
-  const shareSites = (shareSitesData ?? []) as ShareSiteSummary[];
+  const shareSites = mapShareSiteRows(shareSitesData as ShareSiteRow[] | null);
 
   return (
     <DashboardShell
