@@ -90,6 +90,16 @@
 
 > 注：仓库中保留了早期的 Python CLI 和静态模板，若需要纯离线使用仍可执行 `python3 scripts/bookmarks_cli.py` 相关命令。
 
+## 浏览器插件（Beta）
+
+- 插件源码位于 `web-extension/`，采用纯前端实现，可直接在 Chrome / Edge 等 Chromium 浏览器中加载。
+- 访问 `chrome://extensions/`（或 `edge://extensions/`），开启“开发者模式”后选择“加载已解压的扩展程序”，并指定该目录即可安装。
+- 首次使用请在插件中填写 SaaS 导航站的完整地址（例如 `https://nav.example.com`），插件会复用当前浏览器的 Supabase 登录态。
+- 插件会自动读取导航站域名下的 Supabase 会话 Cookie，仅用于在调用 API 时附带访问令牌。
+- 插件会列出当前窗口的可分享标签页和账号下的书签目录，支持多选后直接上传生成新的分享站。
+
+> 如需发布到线上应用商店，可按平台要求对 `web-extension/` 进行打包与签名。
+
 ## 常见问题
 
 - **上传书签时报错 “书签解析失败”？**

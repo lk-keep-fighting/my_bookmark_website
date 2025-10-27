@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+  <head>
+    <meta charset="UTF-8" />
+    <title>导航站分享助手</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main id="app">
+      <header class="app-header">
+        <h1>分享当前标签页</h1>
+        <p class="app-subtitle">选择目录与网页，一键生成共享站点</p>
+      </header>
+
+      <section class="section">
+        <label class="section-label" for="base-url-input">导航站地址</label>
+        <div class="inline">
+          <input id="base-url-input" type="text" placeholder="例如：https://nav.example.com" />
+          <button id="save-base-url" class="primary-button">保存</button>
+        </div>
+        <p class="section-hint">需填写已登录的导航站域名，插件会复用浏览器中的登录状态。</p>
+      </section>
+
+      <section class="section status">
+        <div class="status-row">
+          <span id="status-text" class="status-text">等待加载</span>
+          <button id="refresh-button" class="secondary-button">刷新</button>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <h2>选择目录</h2>
+          <div class="section-actions">
+            <button id="folders-select-all" class="link-button" type="button">全选</button>
+            <button id="folders-clear" class="link-button" type="button">清除</button>
+          </div>
+        </div>
+        <div id="folders-container" class="list"></div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <h2>选择标签页</h2>
+          <div class="section-actions">
+            <button id="tabs-select-all" class="link-button" type="button">全选</button>
+            <button id="tabs-clear" class="link-button" type="button">清除</button>
+          </div>
+        </div>
+        <div id="tabs-container" class="list"></div>
+      </section>
+
+      <section class="section">
+        <label class="section-label" for="share-name-input">分享站名称</label>
+        <input id="share-name-input" type="text" placeholder="例如：本周灵感收藏" />
+      </section>
+
+      <section class="section">
+        <label class="section-label" for="tabs-folder-name-input">标签页目录名称</label>
+        <input id="tabs-folder-name-input" type="text" placeholder="默认为“当前打开的页面”" />
+      </section>
+
+      <section class="section actions">
+        <button id="upload-button" class="primary-button">上传生成分享站</button>
+        <div id="result-message" class="message"></div>
+      </section>
+    </main>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
