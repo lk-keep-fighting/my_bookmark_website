@@ -9,3 +9,4 @@ export {
   cloneBookmarkNode,
   formatFolderTrail,
 } from "./folders";
+export type { FolderOption, FolderTrailItem, FolderLookupResult } from "./folders";
