@@ -40,6 +40,52 @@ export type Database = {
           },
         ];
       };
+      share_sites: {
+        Row: {
+          id: string;
+          user_id: string;
+          collection_id: string;
+          name: string;
+          share_slug: string;
+          folder_id: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          collection_id: string;
+          name: string;
+          share_slug: string;
+          folder_id: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          collection_id?: string;
+          name?: string;
+          share_slug?: string;
+          folder_id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "share_sites_user_id_fkey";
+            columns: ["user_id"];
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "share_sites_collection_id_fkey";
+            columns: ["collection_id"];
+            referencedRelation: "bookmark_collections";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
     Views: never;
     Functions: never;

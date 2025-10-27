@@ -94,5 +94,5 @@ export async function POST(request: Request) {
     }
   }
 
-  return NextResponse.json({ document, shareSlug, updatedAt: now });
+  return NextResponse.json({ document, updatedAt: now });
 }

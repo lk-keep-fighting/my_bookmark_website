@@ -6,7 +6,6 @@ import type { BookmarkDocument } from '@/lib/bookmarks';
 
 export interface ImportResult {
   document: BookmarkDocument;
-  shareSlug: string;
   updatedAt: string;
 }
 
