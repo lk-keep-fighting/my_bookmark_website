@@ -22,11 +22,12 @@ export default async function DashboardPage() {
 
   const { data: shareSitesData } = await supabase
     .from("share_sites")
-    .select("id, name, share_slug, folder_id, created_at, updated_at")
+    .select("id, name, share_slug, folder_ids, created_at, updated_at")
     .eq("user_id", user.id)
-    .order("created_at", { ascending: true });
+    .order("created_at", { ascending: true })
+    .returns<ShareSiteRow[]>();
 
-  const shareSites = mapShareSiteRows(shareSitesData as ShareSiteRow[] | null);
+  const shareSites = mapShareSiteRows(shareSitesData ?? null);
 
   return (
     <DashboardShell

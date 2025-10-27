@@ -38,7 +38,7 @@ export function DashboardShell({
   const [isRefreshingShareSites, setIsRefreshingShareSites] = useState(false);
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [shareModalName, setShareModalName] = useState('');
-  const [shareModalFolderId, setShareModalFolderId] = useState<string | null>(null);
+  const [shareModalFolderIds, setShareModalFolderIds] = useState<string[]>([]);
   const [shareModalError, setShareModalError] = useState<string | null>(null);
   const [isSavingShareSite, setIsSavingShareSite] = useState(false);
   const [editingShareSiteId, setEditingShareSiteId] = useState<string | null>(null);
@@ -264,7 +264,7 @@ export function DashboardShell({
     const defaultFolderId = folderOptions[0]?.id ?? null;
     setEditingShareSiteId(null);
     setShareModalName('');
-    setShareModalFolderId(defaultFolderId);
+    setShareModalFolderIds(defaultFolderId ? [defaultFolderId] : []);
     setShareModalError(null);
     setIsShareModalOpen(true);
   };
@@ -272,7 +272,9 @@ export function DashboardShell({
   const handleOpenEditShareSite = (site: ShareSiteSummary) => {
     setEditingShareSiteId(site.id);
     setShareModalName(site.name);
-    setShareModalFolderId(site.folderId);
+    const availableIds = site.folderIds.filter((id) => folderPathMap.has(id));
+    const fallbackId = folderOptions[0]?.id ?? null;
+    setShareModalFolderIds(availableIds.length > 0 ? availableIds : fallbackId ? [fallbackId] : []);
     setShareModalError(null);
     setIsShareModalOpen(true);
   };
@@ -283,7 +285,7 @@ export function DashboardShell({
     }
     setIsShareModalOpen(false);
     setShareModalName('');
-    setShareModalFolderId(null);
+    setShareModalFolderIds([]);
     setShareModalError(null);
     setEditingShareSiteId(null);
   };
@@ -298,8 +300,8 @@ export function DashboardShell({
       setShareModalError('请输入分享站名称');
       return;
     }
-    if (!shareModalFolderId) {
-      setShareModalError('请选择要分享的目录');
+    if (shareModalFolderIds.length === 0) {
+      setShareModalError('请选择至少一个目录');
       return;
     }
     setIsSavingShareSite(true);
@@ -312,7 +314,7 @@ export function DashboardShell({
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ name: trimmedName, folderId: shareModalFolderId }),
+          body: JSON.stringify({ name: trimmedName, folderIds: shareModalFolderIds }),
         },
       );
       if (!response.ok) {
@@ -327,7 +329,7 @@ export function DashboardShell({
       setShareSitesError(null);
       setIsShareModalOpen(false);
       setShareModalName('');
-      setShareModalFolderId(null);
+      setShareModalFolderIds([]);
       setEditingShareSiteId(null);
       await refreshShareSites();
     } catch (error) {
@@ -509,20 +511,35 @@ export function DashboardShell({
           {shareSites.length > 0 ? (
             <div style={shareListStyle}>
               {shareSites.map((site) => {
-                const folderPath = folderPathMap.get(site.folderId);
                 const shareUrl = getShareUrl(site.shareSlug);
+                const folderBadges = site.folderIds.length > 0
+                  ? site.folderIds.map((folderId) => {
+                      const path = folderPathMap.get(folderId);
+                      if (path) {
+                        return (
+                          <span key={folderId} style={shareSiteTrailChipStyle}>
+                            {path}
+                          </span>
+                        );
+                      }
+                      return (
+                        <span key={folderId} style={shareSiteTrailMissingChipStyle}>
+                          目录已删除或不再存在
+                        </span>
+                      );
+                    })
+                  : [
+                      <span key="empty" style={shareSiteTrailMissingChipStyle}>
+                        未选择目录
+                      </span>,
+                    ];
+
                 return (
                   <div key={site.id} style={shareListItemStyle}>
                     <div style={shareListItemHeaderStyle}>
                       <div style={shareListItemTitleStyle}>
                         <div style={shareSiteNameStyle}>{site.name}</div>
-                        <div style={shareSiteTrailStyle}>
-                          {folderPath ? (
-                            folderPath
-                          ) : (
-                            <span style={shareSiteTrailMissingStyle}>目录已删除或不再存在，请编辑后重新选择</span>
-                          )}
-                        </div>
+                        <div style={shareSiteTrailStyle}>{folderBadges}</div>
                       </div>
                       <div style={shareListItemActionsStyle}>
                         <button type="button" onClick={() => handleCopyShareLink(site)} style={shareActionButtonStyle}>
@@ -630,12 +647,12 @@ export function DashboardShell({
                 />
               </div>
               <div style={modalFieldStyle}>
-                <span style={modalLabelStyle}>选择要分享的目录</span>
+                <span style={modalLabelStyle}>选择要分享的目录（可多选）</span>
                 {folderOptions.length > 0 ? (
                   <div style={modalFolderListStyle}>
                     {folderOptions.map((option, index) => {
                       const optionPath = formatFolderTrail(option.trail);
-                      const isSelected = shareModalFolderId === option.id;
+                      const isSelected = shareModalFolderIds.includes(option.id);
                       const isLast = index === folderOptions.length - 1;
                       return (
                         <label
@@ -651,16 +668,26 @@ export function DashboardShell({
                           }}
                         >
                           <input
-                            type="radio"
-                            name="share-folder"
+                            type="checkbox"
                             value={option.id}
                             checked={isSelected}
                             onChange={() => {
-                              setShareModalFolderId(option.id);
-                              setShareModalError(null);
+                              let nextSelection: string[] = [];
+                              setShareModalFolderIds((previous) => {
+                                let next: string[];
+                                if (previous.includes(option.id)) {
+                                  next = previous.filter((id) => id !== option.id);
+                                } else {
+                                  next = [...previous, option.id];
+                                }
+                                const orderedIds = folderOptions.map((item) => item.id);
+                                nextSelection = orderedIds.filter((id) => next.includes(id));
+                                return nextSelection;
+                              });
+                              setShareModalError(nextSelection.length === 0 ? '请选择至少一个目录' : null);
                             }}
                             disabled={isSavingShareSite}
-                            style={modalFolderRadioStyle}
+                            style={modalFolderCheckboxStyle}
                           />
                           <div style={modalFolderInfoStyle}>
                             <span style={modalFolderNameStyle}>{optionPath}</span>
@@ -690,10 +717,11 @@ export function DashboardShell({
                 onClick={handleSubmitShareSite}
                 style={{
                   ...modalPrimaryButtonStyle,
-                  opacity: isSavingShareSite ? 0.7 : 1,
-                  cursor: isSavingShareSite ? 'not-allowed' : 'pointer',
+                  opacity: isSavingShareSite || shareModalFolderIds.length === 0 ? 0.7 : 1,
+                  cursor:
+                    isSavingShareSite || shareModalFolderIds.length === 0 ? 'not-allowed' : 'pointer',
                 }}
-                disabled={isSavingShareSite}
+                disabled={isSavingShareSite || shareModalFolderIds.length === 0}
               >
                 {isSavingShareSite ? '保存中…' : '保存'}
               </button>
@@ -893,15 +921,30 @@ const shareSiteNameStyle: React.CSSProperties = {
 };
 
 const shareSiteTrailStyle: React.CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: '6px',
   fontSize: '13px',
   color: '#64748b',
-  wordBreak: 'break-all',
 };
 
-const shareSiteTrailMissingStyle: React.CSSProperties = {
-  color: '#dc2626',
-  fontSize: '13px',
-  fontWeight: 600,
+const shareSiteTrailChipStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  padding: '4px 10px',
+  borderRadius: '999px',
+  background: 'rgba(59, 130, 246, 0.08)',
+  border: '1px solid rgba(59, 130, 246, 0.25)',
+  color: '#1d4ed8',
+  fontSize: '12px',
+  lineHeight: '18px',
+};
+
+const shareSiteTrailMissingChipStyle: React.CSSProperties = {
+  ...shareSiteTrailChipStyle,
+  background: 'rgba(248, 113, 113, 0.12)',
+  border: '1px solid rgba(248, 113, 113, 0.35)',
+  color: '#b91c1c',
 };
 
 const shareListItemActionsStyle: React.CSSProperties = {
@@ -1081,7 +1124,7 @@ const modalFolderOptionStyle: React.CSSProperties = {
   cursor: 'pointer',
 };
 
-const modalFolderRadioStyle: React.CSSProperties = {
+const modalFolderCheckboxStyle: React.CSSProperties = {
   margin: 0,
 };
 

@@ -47,7 +47,7 @@ export type Database = {
           collection_id: string;
           name: string;
           share_slug: string;
-          folder_id: string;
+          folder_ids: string[];
           created_at: string;
           updated_at: string;
         };
@@ -57,7 +57,7 @@ export type Database = {
           collection_id: string;
           name: string;
           share_slug: string;
-          folder_id: string;
+          folder_ids: string[];
           created_at?: string;
           updated_at?: string;
         };
@@ -67,7 +67,7 @@ export type Database = {
           collection_id?: string;
           name?: string;
           share_slug?: string;
-          folder_id?: string;
+          folder_ids?: string[];
           created_at?: string;
           updated_at?: string;
         };

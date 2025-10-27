@@ -22,7 +22,7 @@ export default async function SharePage({ params }: SharePageProps) {
   const admin = getSupabaseAdminClient();
   const { data: shareSite, error: shareSiteError } = await admin
     .from("share_sites")
-    .select("id, name, share_slug, folder_id, collection_id")
+    .select("id, name, share_slug, folder_ids, collection_id")
     .eq("share_slug", params.slug)
     .maybeSingle();
 
@@ -41,29 +41,42 @@ export default async function SharePage({ params }: SharePageProps) {
   }
 
   const originalDocument = collection.data as BookmarkDocument;
-  const folderLookup = findFolderWithTrail(originalDocument.root, shareSite.folder_id);
+  const folderIds = Array.isArray(shareSite.folder_ids) ? shareSite.folder_ids : [];
+  const folderLookups = folderIds
+    .map((folderId) => findFolderWithTrail(originalDocument.root, folderId))
+    .filter((lookup): lookup is NonNullable<typeof lookup> => Boolean(lookup));
 
-  if (!folderLookup) {
+  if (folderLookups.length === 0) {
     notFound();
   }
 
-  const clonedRoot = cloneBookmarkNode(folderLookup.node) as BookmarkNode & { type: "folder" };
+  const clonedFolders = folderLookups.map(
+    (lookup) => cloneBookmarkNode(lookup.node) as BookmarkNode & { type: "folder" },
+  );
+
   const siteTitleCandidate =
     shareSite.name?.trim() ||
     originalDocument.metadata?.siteTitle?.trim() ||
     collection.title?.trim() ||
-    folderLookup.node.name?.trim() ||
+    folderLookups[0]?.node.name?.trim() ||
     originalDocument.root.name?.trim() ||
     "书签导航";
 
+  const shareRoot: BookmarkNode = {
+    type: "folder",
+    id: `${shareSite.share_slug}-root`,
+    name: siteTitleCandidate,
+    children: clonedFolders,
+  };
+
   const sharedDocument: BookmarkDocument = {
     ...originalDocument,
-    root: clonedRoot,
+    root: shareRoot,
     metadata: {
       ...originalDocument.metadata,
       siteTitle: siteTitleCandidate,
     },
-    statistics: calculateBookmarkStatistics(clonedRoot),
+    statistics: calculateBookmarkStatistics(shareRoot),
   };
 
   let contactEmail = sharedDocument.metadata?.contactEmail?.trim() ?? "";
@@ -77,6 +90,14 @@ export default async function SharePage({ params }: SharePageProps) {
     }
   }
 
+  const finalDocument: BookmarkDocument = {
+    ...sharedDocument,
+    metadata: {
+      ...sharedDocument.metadata,
+      contactEmail: contactEmail ? contactEmail : null,
+    },
+  };
+
   const viewerHeader = (
     <span style={shareUpdatedStyle}>最近更新：{formatDate(collection.updated_at)}</span>
   );
@@ -85,7 +106,7 @@ export default async function SharePage({ params }: SharePageProps) {
     <main style={shareMainStyle}>
       <section style={viewerSectionStyle}>
         <NavigationViewer
-          document={sharedDocument}
+          document={finalDocument}
           emptyHint="暂无可展示的书签"
           siteTitle={siteTitleCandidate}
           contactEmail={contactEmail || undefined}

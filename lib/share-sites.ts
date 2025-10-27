@@ -2,14 +2,14 @@ import type { Database } from "./supabase/types";
 
 export type ShareSiteRow = Pick<
   Database["public"]["Tables"]["share_sites"]["Row"],
-  "id" | "name" | "share_slug" | "folder_id" | "created_at" | "updated_at"
+  "id" | "name" | "share_slug" | "folder_ids" | "created_at" | "updated_at"
 >;
 
 export type ShareSiteSummary = {
   id: string;
   name: string;
   shareSlug: string;
-  folderId: string;
+  folderIds: string[];
   createdAt: string;
   updatedAt: string;
 };
@@ -19,7 +19,7 @@ export function mapShareSiteRow(row: ShareSiteRow): ShareSiteSummary {
     id: row.id,
     name: row.name,
     shareSlug: row.share_slug,
-    folderId: row.folder_id,
+    folderIds: Array.isArray(row.folder_ids) ? [...row.folder_ids] : [],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

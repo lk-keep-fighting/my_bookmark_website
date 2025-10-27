@@ -14,7 +14,7 @@ import {
 
 interface ShareSitePayload {
   name?: string;
-  folderId?: string;
+  folderIds?: string[];
 }
 
 export async function GET() {
@@ -34,7 +34,7 @@ export async function GET() {
 
   const { data, error } = await supabase
     .from("share_sites")
-    .select("id, name, share_slug, folder_id, created_at, updated_at")
+    .select("id, name, share_slug, folder_ids, created_at, updated_at")
     .eq("user_id", user.id)
     .order("created_at", { ascending: true });
 
@@ -72,8 +72,16 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "请填写分享站名称" }, { status: 400 });
   }
 
-  const folderId = typeof payload.folderId === "string" ? payload.folderId.trim() : "";
-  if (!folderId) {
+  const rawFolderIds = Array.isArray(payload.folderIds) ? payload.folderIds : [];
+  const normalizedFolderIds = Array.from(
+    new Set(
+      rawFolderIds
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter((item) => item.length > 0),
+    ),
+  );
+
+  if (normalizedFolderIds.length === 0) {
     return NextResponse.json({ error: "请选择要分享的目录" }, { status: 400 });
   }
 
@@ -92,7 +100,15 @@ export async function POST(request: Request) {
   }
 
   const document = collection.data as BookmarkDocument;
-  if (!findFolderWithTrail(document.root, folderId)) {
+  const validFolderIds: string[] = [];
+
+  for (const folderId of normalizedFolderIds) {
+    if (findFolderWithTrail(document.root, folderId)) {
+      validFolderIds.push(folderId);
+    }
+  }
+
+  if (validFolderIds.length === 0) {
     return NextResponse.json({ error: "未找到指定目录，请重新选择" }, { status: 404 });
   }
 
@@ -102,7 +118,7 @@ export async function POST(request: Request) {
     user_id: user.id,
     collection_id: collection.id,
     name: rawName,
-    folder_id: folderId,
+    folder_ids: validFolderIds,
     created_at: now,
     updated_at: now,
   } satisfies Omit<Database["public"]["Tables"]["share_sites"]["Insert"], "share_slug">;
@@ -115,7 +131,7 @@ export async function POST(request: Request) {
     const { data: insertData, error: insertError } = await admin
       .from("share_sites")
       .insert({ ...baseInsert, share_slug: shareSlug })
-      .select("id, name, share_slug, folder_id, created_at, updated_at")
+      .select("id, name, share_slug, folder_ids, created_at, updated_at")
       .single<ShareSiteRow>();
 
     if (!insertError && insertData) {

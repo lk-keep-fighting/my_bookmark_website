@@ -8,7 +8,7 @@ import { mapShareSiteRow, type ShareSiteRow } from "@/lib/share-sites";
 
 interface ShareSitePayload {
   name?: string;
-  folderId?: string;
+  folderIds?: string[];
 }
 
 export async function PUT(request: Request, { params }: { params: { id: string } }) {
@@ -34,9 +34,9 @@ export async function PUT(request: Request, { params }: { params: { id: string }
   }
 
   const hasName = Object.prototype.hasOwnProperty.call(payload, "name");
-  const hasFolder = Object.prototype.hasOwnProperty.call(payload, "folderId");
+  const hasFolderSelection = Object.prototype.hasOwnProperty.call(payload, "folderIds");
 
-  if (!hasName && !hasFolder) {
+  if (!hasName && !hasFolderSelection) {
     return NextResponse.json({ error: "请提供需更新的名称或目录" }, { status: 400 });
   }
 
@@ -67,9 +67,17 @@ export async function PUT(request: Request, { params }: { params: { id: string }
     updates.name = rawName;
   }
 
-  if (hasFolder) {
-    const folderId = typeof payload.folderId === "string" ? payload.folderId.trim() : "";
-    if (!folderId) {
+  if (hasFolderSelection) {
+    const rawFolderIds = Array.isArray(payload.folderIds) ? payload.folderIds : [];
+    const normalizedFolderIds = Array.from(
+      new Set(
+        rawFolderIds
+          .map((item) => (typeof item === "string" ? item.trim() : ""))
+          .filter((item) => item.length > 0),
+      ),
+    );
+
+    if (normalizedFolderIds.length === 0) {
       return NextResponse.json({ error: "请选择要分享的目录" }, { status: 400 });
     }
 
@@ -87,10 +95,18 @@ export async function PUT(request: Request, { params }: { params: { id: string }
       return NextResponse.json({ error: "原始书签数据不存在，无法更新分享站" }, { status: 404 });
     }
 
-    if (!findFolderWithTrail(collection.data.root, folderId)) {
+    const validFolderIds: string[] = [];
+    for (const folderId of normalizedFolderIds) {
+      if (findFolderWithTrail(collection.data.root, folderId)) {
+        validFolderIds.push(folderId);
+      }
+    }
+
+    if (validFolderIds.length === 0) {
       return NextResponse.json({ error: "未找到指定目录，请重新选择" }, { status: 404 });
     }
-    updates.folder_id = folderId;
+
+    updates.folder_ids = validFolderIds;
   }
 
   const admin = getSupabaseAdminClient();
@@ -98,7 +114,7 @@ export async function PUT(request: Request, { params }: { params: { id: string }
     .from("share_sites")
     .update(updates)
     .eq("id", existing.id)
-    .select("id, name, share_slug, folder_id, created_at, updated_at")
+    .select("id, name, share_slug, folder_ids, created_at, updated_at")
     .single<ShareSiteRow>();
 
   if (updateError) {
