@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "书签导航分享助手",
+  "description": "从浏览器插件直接选择标签页和目录，一键上传生成个人分享站。",
+  "version": "0.1.0",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "上传到导航站"
+  },
+  "permissions": [
+    "tabs",
+    "storage",
+    "cookies"
+  ],
+  "host_permissions": [
+    "http://*/",
+    "https://*/"
+  ]
+}
