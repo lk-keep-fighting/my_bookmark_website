@@ -11,6 +11,9 @@
     "tabs",
     "storage",
     "cookies",
+    "permissions"
+  ],
+  "optional_permissions": [
     "bookmarks"
   ],
   "host_permissions": [

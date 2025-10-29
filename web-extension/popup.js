@@ -20,6 +20,7 @@ const state = {
   lastAccessToken: null,
   siteTitle: null,
   userEmail: null,
+  hasBookmarkPermission: null,
 };
 
 const elements = {};
@@ -53,6 +54,7 @@ function cacheElements() {
   elements.foldersClearButton = document.getElementById("folders-clear");
   elements.tabsSelectAllButton = document.getElementById("tabs-select-all");
   elements.tabsClearButton = document.getElementById("tabs-clear");
+  elements.bookmarksPermissionButton = document.getElementById("bookmarks-permission-button");
 }
 
 function bindEvents() {
@@ -101,6 +103,12 @@ function bindEvents() {
     renderTabsList();
     updateSubmitState();
   });
+
+  if (elements.bookmarksPermissionButton) {
+    elements.bookmarksPermissionButton.addEventListener("click", async () => {
+      await handleBookmarksPermissionRequest();
+    });
+  }
 
   elements.shareNameInput.addEventListener("input", () => {
     updateSubmitState();
@@ -164,6 +172,23 @@ async function refreshBookmarkTree() {
   renderBookmarkTree();
   updateStatusBanner();
 
+  const hasPermission = await checkBookmarksPermission();
+  state.hasBookmarkPermission = hasPermission;
+  updateBookmarkPermissionButton();
+
+  if (!hasPermission) {
+    state.bookmarkTree = [];
+    state.siteTitle = null;
+    state.expandedFolderIds.clear();
+    state.selectedBookmarkIds.clear();
+    state.bookmarksError = "尚未授权访问浏览器书签，请点击下方按钮进行授权";
+    state.isLoadingBookmarks = false;
+    renderBookmarkTree();
+    updateStatusBanner();
+    updateSubmitState();
+    return;
+  }
+
   try {
     const rawTree = await getBookmarkTree();
     const normalized = normalizeBookmarkTree(rawTree);
@@ -191,8 +216,14 @@ async function refreshBookmarkTree() {
     state.siteTitle = null;
     state.expandedFolderIds.clear();
     state.selectedBookmarkIds.clear();
+    state.bookmarksLoaded = false;
     const message = error instanceof Error ? error.message : "读取浏览器书签失败";
     state.bookmarksError = message;
+    if (isBookmarksPermissionError(message)) {
+      state.hasBookmarkPermission = false;
+      updateBookmarkPermissionButton();
+      state.bookmarksError = "未能读取浏览器书签，请点击下方按钮授权后重试";
+    }
     renderBookmarkTree();
   } finally {
     state.isLoadingBookmarks = false;
@@ -270,6 +301,99 @@ async function refreshAuthState() {
     updateStatusBanner();
     updateSubmitState();
   }
+}
+
+async function handleBookmarksPermissionRequest() {
+  if (!elements.bookmarksPermissionButton) {
+    return;
+  }
+
+  elements.bookmarksPermissionButton.disabled = true;
+
+  try {
+    const granted = await requestBookmarksPermission();
+    if (granted) {
+      state.hasBookmarkPermission = true;
+      state.bookmarksError = null;
+      updateBookmarkPermissionButton();
+      setResultMessage("已获得浏览器书签访问权限", "success");
+      await refreshBookmarkTree();
+    } else {
+      state.hasBookmarkPermission = false;
+      state.bookmarksError = "尚未授权访问浏览器书签，请点击下方按钮进行授权";
+      updateBookmarkPermissionButton();
+      renderBookmarkTree();
+      updateStatusBanner();
+      setResultMessage("未获得浏览器书签访问权限", "error");
+    }
+  } catch (error) {
+    console.error("申请书签权限失败", error);
+    setResultMessage("申请书签权限失败，请稍后重试", "error");
+  } finally {
+    elements.bookmarksPermissionButton.disabled = false;
+    updateSubmitState();
+  }
+}
+
+async function checkBookmarksPermission() {
+  if (typeof chrome === "undefined") {
+    return false;
+  }
+
+  if (!chrome.permissions || typeof chrome.permissions.contains !== "function") {
+    return true;
+  }
+
+  return new Promise((resolve) => {
+    chrome.permissions.contains({ permissions: ["bookmarks"] }, (result) => {
+      if (chrome.runtime.lastError) {
+        console.warn("检测书签权限失败", chrome.runtime.lastError);
+        resolve(false);
+        return;
+      }
+      resolve(Boolean(result));
+    });
+  });
+}
+
+async function requestBookmarksPermission() {
+  if (typeof chrome === "undefined" || !chrome.permissions || typeof chrome.permissions.request !== "function") {
+    return false;
+  }
+
+  return new Promise((resolve) => {
+    chrome.permissions.request({ permissions: ["bookmarks"] }, (granted) => {
+      if (chrome.runtime.lastError) {
+        console.warn("申请书签权限时出错", chrome.runtime.lastError);
+        resolve(false);
+        return;
+      }
+      resolve(Boolean(granted));
+    });
+  });
+}
+
+function updateBookmarkPermissionButton() {
+  if (!elements.bookmarksPermissionButton) {
+    return;
+  }
+
+  if (state.hasBookmarkPermission === false) {
+    elements.bookmarksPermissionButton.style.display = "";
+  } else {
+    elements.bookmarksPermissionButton.style.display = "none";
+  }
+}
+
+function isBookmarksPermissionError(message) {
+  if (typeof message !== "string") {
+    return false;
+  }
+  const lower = message.toLowerCase();
+  if (lower.includes("bookmark") && lower.includes("permission")) {
+    return true;
+  }
+  return message.includes("权限") && message.includes("书签");
 }
 
 async function getBookmarkTree() {
@@ -865,7 +989,6 @@ function updateStatusBanner() {
     }
   } else if (state.isAuthenticated === false) {
     parts.push("未检测到导航站登录");
-    type = "error";
   } else {
     parts.push("正在检测登录状态…");
   }
