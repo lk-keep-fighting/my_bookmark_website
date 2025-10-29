@@ -94,6 +94,36 @@ export function NavigationViewer({
   contactEmail,
   onDocumentChange,
 }: NavigationViewerProps) {
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const styleId = 'bookmark-card-animations';
+    if (document.getElementById(styleId)) return;
+    
+    const style = document.createElement('style');
+    style.id = styleId;
+    style.textContent = `
+      @keyframes borderGradientRotate {
+        0% {
+          background-position: 0% 50%;
+        }
+        50% {
+          background-position: 100% 50%;
+        }
+        100% {
+          background-position: 0% 50%;
+        }
+      }
+    `;
+    document.head.appendChild(style);
+    
+    return () => {
+      const existingStyle = document.getElementById(styleId);
+      if (existingStyle) {
+        existingStyle.remove();
+      }
+    };
+  }, []);
+
   const navigationIndex = useMemo<NavigationIndex>(() => {
     if (!bookmarkDocument) {
       return EMPTY_INDEX;
@@ -833,11 +863,11 @@ export function NavigationViewer({
                   const isPressing = !isDraggingCurrent && pressingBookmarkId === node.id;
                   const isDragOver = dragOverId === node.id;
                   const cardBorder = isDragOver
-                    ? '1px dashed rgba(59, 130, 246, 0.8)'
+                    ? '2px dashed rgba(59, 130, 246, 0.8)'
                     : isPressing
-                      ? '1px solid rgba(14, 165, 233, 0.55)'
+                      ? '2px solid rgba(14, 165, 233, 0.7)'
                       : isHovered
-                        ? '1px solid rgba(59, 130, 246, 0.45)'
+                        ? '2px solid transparent'
                         : '1px solid rgba(148, 163, 184, 0.28)';
                   const cardBackground = isPressing
                     ? 'linear-gradient(135deg, rgba(37, 99, 235, 0.92), rgba(14, 165, 233, 0.88))'
@@ -852,8 +882,9 @@ export function NavigationViewer({
                   const cardTransform = isPressing
                     ? 'translateY(2px) scale(0.98)'
                     : isHovered
-                      ? 'translateY(-6px) scale(1.02)'
+                      ? 'translateY(-4px) scale(1.04)'
                       : 'translateY(0)';
+                  const cardZIndex = isHovered || isPressing ? 10 : 1;
                   const nameColor = isPressing ? '#f8fafc' : '#0f172a';
                   const hostColor = isPressing ? 'rgba(226, 232, 240, 0.9)' : '#475569';
                   const editColor = isPressing ? '#e0f2fe' : '#2563eb';
@@ -861,69 +892,101 @@ export function NavigationViewer({
                   return (
                     <div
                       key={node.id}
-                      draggable={canReorder && !isEditing}
-                      onDragStart={(event) => {
-                        if (!canReorder || isEditing) return;
-                        setPressingBookmarkId(null);
-                        setDraggingId(node.id);
-                        setHoveredBookmarkId(node.id);
-                        event.dataTransfer.effectAllowed = 'move';
-                        event.dataTransfer.setData('text/plain', node.id);
-                      }}
-                      onDragOver={(event) => {
-                        if (!canReorder) return;
-                        event.preventDefault();
-                        setDragOverId(node.id);
-                        event.dataTransfer.dropEffect = 'move';
-                      }}
-                      onDragLeave={() => setDragOverId((current) => (current === node.id ? null : current))}
-                      onDrop={handleDrop(node.id)}
-                      onDragEnd={() => {
-                        setDraggingId(null);
-                        setDragOverId(null);
-                        setHoveredBookmarkId(null);
-                        setPressingBookmarkId(null);
-                      }}
-                      onMouseEnter={() => {
-                        if (isEditing) return;
-                        setHoveredBookmarkId(node.id);
-                      }}
-                      onMouseLeave={() => {
-                        setHoveredBookmarkId((current) => (current === node.id ? null : current));
-                        setPressingBookmarkId((current) => (current === node.id ? null : current));
-                      }}
-                      onFocus={() => {
-                        if (isEditing) return;
-                        setHoveredBookmarkId(node.id);
-                      }}
-                      onBlur={() => {
-                        setHoveredBookmarkId((current) => (current === node.id ? null : current));
-                        setPressingBookmarkId((current) => (current === node.id ? null : current));
-                      }}
-                      onMouseDown={() => {
-                        if (isEditing) return;
-                        setPressingBookmarkId(node.id);
-                      }}
-                      onMouseUp={() => {
-                        setPressingBookmarkId((current) => (current === node.id ? null : current));
-                      }}
-                      onTouchStart={() => {
-                        if (isEditing) return;
-                        setPressingBookmarkId(node.id);
-                      }}
-                      onTouchEnd={() => {
-                        setPressingBookmarkId((current) => (current === node.id ? null : current));
-                      }}
                       style={{
-                        ...bookmarkItemStyle,
-                        opacity: isDraggingCurrent ? 0.6 : 1,
-                        border: cardBorder,
-                        cursor: canReorder ? 'grab' : 'default',
-                        background: cardBackground,
-                        boxShadow: cardShadow,
-                        transform: cardTransform,
+                        position: 'relative',
+                        height: '100%',
                       }}
                     >
+                      {isHovered && !isDraggingCurrent && (
+                        <div
+                          style={{
+                            position: 'absolute',
+                            top: '-2px',
+                            left: '-2px',
+                            right: '-2px',
+                            bottom: '-2px',
+                            borderRadius: '20px',
+                            background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.9), rgba(168, 85, 247, 0.9), rgba(236, 72, 153, 0.9), rgba(251, 146, 60, 0.9), rgba(59, 130, 246, 0.9))',
+                            backgroundSize: '300% 300%',
+                            animation: 'borderGradientRotate 3s ease infinite',
+                            zIndex: -1,
+                            pointerEvents: 'none',
+                          }}
+                        />
+                      )}
+                      <div
+                        draggable={canReorder && !isEditing}
+                        onDragStart={(event) => {
+                          if (!canReorder || isEditing) return;
+                          setPressingBookmarkId(null);
+                          setDraggingId(node.id);
+                          setHoveredBookmarkId(node.id);
+                          event.dataTransfer.effectAllowed = 'move';
+                          event.dataTransfer.setData('text/plain', node.id);
+                        }}
+                        onDragOver={(event) => {
+                          if (!canReorder) return;
+                          event.preventDefault();
+                          setDragOverId(node.id);
+                          event.dataTransfer.dropEffect = 'move';
+                        }}
+                        onDragLeave={() => setDragOverId((current) => (current === node.id ? null : current))}
+                        onDrop={handleDrop(node.id)}
+                        onDragEnd={() => {
+                          setDraggingId(null);
+                          setDragOverId(null);
+                          setHoveredBookmarkId(null);
+                          setPressingBookmarkId(null);
+                        }}
+                        onMouseEnter={() => {
+                          if (isEditing) return;
+                          setHoveredBookmarkId(node.id);
+                        }}
+                        onMouseLeave={() => {
+                          setHoveredBookmarkId((current) => (current === node.id ? null : current));
+                          setPressingBookmarkId((current) => (current === node.id ? null : current));
+                        }}
+                        onFocus={() => {
+                          if (isEditing) return;
+                          setHoveredBookmarkId(node.id);
+                        }}
+                        onBlur={() => {
+                          setHoveredBookmarkId((current) => (current === node.id ? null : current));
+                          setPressingBookmarkId((current) => (current === node.id ? null : current));
+                        }}
+                        onMouseDown={() => {
+                          if (isEditing) return;
+                          setPressingBookmarkId(node.id);
+                        }}
+                        onMouseUp={() => {
+                          setPressingBookmarkId((current) => (current === node.id ? null : current));
+                        }}
+                        onTouchStart={() => {
+                          if (isEditing) return;
+                          setPressingBookmarkId(node.id);
+                        }}
+                        onTouchEnd={() => {
+                          setPressingBookmarkId((current) => (current === node.id ? null : current));
+                        }}
+                        style={{
+                          ...bookmarkItemStyle,
+                          opacity: isDraggingCurrent ? 0.6 : 1,
+                          border: cardBorder,
+                          cursor: canReorder ? 'grab' : node.url ? 'pointer' : 'default',
+                          background: cardBackground,
+                          boxShadow: cardShadow,
+                          transform: cardTransform,
+                          zIndex: cardZIndex,
+                        }}
+                        onClick={(e) => {
+                          if (!canReorder && !isEditing && node.url) {
+                            const target = e.target as HTMLElement;
+                            if (target.tagName !== 'BUTTON' && !target.closest('button')) {
+                              window.open(node.url, '_blank', 'noopener,noreferrer');
+                            }
+                          }
+                        }}
+                      >
                       {isEditing ? (
                         <div style={editingContainerStyle}>
                           <input
@@ -980,11 +1043,7 @@ export function NavigationViewer({
                           <span style={{ ...bookmarkHostStyle, color: hostColor }}>{host}</span>
                         </div>
                       )}
-                      {node.url && (
-                        <a href={node.url} target="_blank" rel="noopener noreferrer" style={bookmarkVisitLinkStyle}>
-                          访问网页
-                        </a>
-                      )}
+                      </div>
                     </div>
                   );
                 })}
@@ -1573,6 +1632,10 @@ const sidebarStyle: React.CSSProperties = {
   padding: '18px 16px',
   border: '1px solid rgba(148, 163, 184, 0.3)',
   boxShadow: '0 14px 32px rgba(15, 23, 42, 0.06)',
+  position: 'relative',
+  zIndex: 1,
+  maxHeight: 'calc(100vh - 200px)',
+  overflow: 'hidden',
 };
 
 const sidebarSearchInfoStyle: React.CSSProperties = {
@@ -1980,7 +2043,6 @@ const bookmarkGridStyle: React.CSSProperties = {
   gap: '18px',
   alignItems: 'stretch',
   position: 'relative',
-  zIndex: 0,
 };
 
 const bookmarkItemStyle: React.CSSProperties = {
@@ -1991,10 +2053,9 @@ const bookmarkItemStyle: React.CSSProperties = {
   padding: '16px 18px',
   background: 'linear-gradient(140deg, rgba(248, 250, 252, 0.95), rgba(255, 255, 255, 0.98))',
   boxShadow: '0 14px 32px rgba(15, 23, 42, 0.08)',
-  transition: 'transform 0.25s ease, border 0.2s ease, box-shadow 0.25s ease, background 0.25s ease',
+  transition: 'transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), border 0.2s ease, box-shadow 0.3s ease, background 0.25s ease',
   height: '100%',
   position: 'relative',
-  zIndex: 0,
 };
 
 const bookmarkTitleRowStyle: React.CSSProperties = {
