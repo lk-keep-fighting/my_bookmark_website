@@ -147,11 +147,15 @@ async function refreshContext() {
 
   try {
     const headers = await buildAuthHeaders();
-    const response = await fetch(buildApiUrl("/api/extension/context"), {
+    const { response, resolvedBaseUrl } = await fetchWithBaseFallback("/api/extension/context", {
       method: "GET",
       credentials: "include",
       headers,
     });
+
+    if (typeof resolvedBaseUrl === "string" && resolvedBaseUrl && resolvedBaseUrl !== state.baseUrl) {
+      await applyResolvedBaseUrl(resolvedBaseUrl);
+    }
 
     if (response.status === 401) {
       state.isAuthenticated = false;
@@ -490,12 +494,95 @@ function sanitizeBaseUrl(input) {
   }
 }
 
-function buildApiUrl(path) {
-  const base = state.baseUrl.replace(/\/+$/, "");
+function buildApiUrl(path, baseOverride) {
+  const baseCandidate =
+    typeof baseOverride === "string" && baseOverride.trim() ? baseOverride.trim() : state.baseUrl;
+  const sanitizedBase = baseCandidate.replace(/\/+$/, "");
   if (!path.startsWith("/")) {
-    return `${base}/${path}`;
+    return sanitizedBase ? `${sanitizedBase}/${path}` : path;
   }
-  return `${base}${path}`;
+  return sanitizedBase ? `${sanitizedBase}${path}` : path;
+}
+
+function buildBaseUrlCandidates(baseUrl) {
+  if (!baseUrl) {
+    return [];
+  }
+
+  const candidates = [];
+  const seen = new Set();
+
+  try {
+    const parsed = new URL(baseUrl);
+    const origin = parsed.origin;
+    const pathname = parsed.pathname.replace(/\/+$/, "");
+    const segments = pathname.split("/").filter(Boolean);
+
+    for (let i = segments.length; i >= 0; i -= 1) {
+      const partialPath = segments.slice(0, i).join("/");
+      const candidate = partialPath ? `${origin}/${partialPath}` : origin;
+      if (!seen.has(candidate)) {
+        seen.add(candidate);
+        candidates.push(candidate);
+      }
+    }
+
+    return candidates;
+  } catch {
+    return [baseUrl];
+  }
+}
+
+async function fetchWithBaseFallback(path, init = {}) {
+  const candidates = buildBaseUrlCandidates(state.baseUrl);
+  if (!candidates.length) {
+    throw new Error("请先设置导航站地址");
+  }
+
+  let lastNotFoundStatus = null;
+  let lastError = null;
+
+  for (const candidate of candidates) {
+    const requestInit = { ...init };
+    const url = buildApiUrl(path, candidate);
+
+    try {
+      const response = await fetch(url, requestInit);
+      if (response.status === 404) {
+        lastNotFoundStatus = response.status;
+        continue;
+      }
+      return { response, resolvedBaseUrl: candidate };
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  if (lastNotFoundStatus) {
+    throw new Error(`加载失败（${lastNotFoundStatus}）`);
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  throw new Error("请求失败，请稍后重试");
+}
+
+async function applyResolvedBaseUrl(resolvedBaseUrl) {
+  const normalized = sanitizeBaseUrl(resolvedBaseUrl);
+  if (!normalized || normalized === state.baseUrl) {
+    return;
+  }
+
+  state.baseUrl = normalized;
+  elements.baseUrlInput.value = normalized;
+
+  try {
+    await storageSet({ baseUrl: normalized });
+  } catch (error) {
+    console.warn("同步导航站地址失败", error);
+  }
 }
 
 function buildDefaultShareName(siteTitle) {
