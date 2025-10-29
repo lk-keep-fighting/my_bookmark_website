@@ -12,6 +12,9 @@
     "storage",
     "cookies"
   ],
+  "optional_permissions": [
+    "bookmarks"
+  ],
   "host_permissions": [
     "http://*/",
     "https://*/"
