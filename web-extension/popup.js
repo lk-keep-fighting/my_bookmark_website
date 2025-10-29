@@ -1,8 +1,9 @@
 const DEFAULT_TABS_FOLDER_NAME = "当前打开的页面";
+const DEFAULT_BASE_URL = "https://my-nav.ydtpt.com";
 const SUPABASE_COOKIE_REGEX = /^sb-.*-auth-token$/;
 
 const state = {
-  baseUrl: "",
+  baseUrl: DEFAULT_BASE_URL,
   context: null,
   tabs: [],
   selectedFolderIds: new Set(),
@@ -108,24 +109,46 @@ function bindEvents() {
 }
 
 async function loadBaseUrl() {
+  const defaultSanitized = sanitizeBaseUrl(DEFAULT_BASE_URL);
+
+  if (!defaultSanitized) {
+    state.baseUrl = "";
+    if (elements.baseUrlInput) {
+      elements.baseUrlInput.value = "";
+    }
+    setResultMessage("导航站地址不可用", "error");
+    return;
+  }
+
+  state.baseUrl = defaultSanitized;
+  state.lastAccessToken = null;
+
+  if (elements.baseUrlInput) {
+    elements.baseUrlInput.value = defaultSanitized;
+    elements.baseUrlInput.readOnly = true;
+  }
+
+  if (elements.saveBaseUrlButton) {
+    elements.saveBaseUrlButton.disabled = true;
+    elements.saveBaseUrlButton.style.display = "none";
+  }
+
   try {
     const stored = await storageGet("baseUrl");
-    const saved = typeof stored === "string" ? stored : "";
-    const sanitized = sanitizeBaseUrl(saved);
-    if (sanitized) {
-      state.baseUrl = sanitized;
-      state.lastAccessToken = null;
-      elements.baseUrlInput.value = sanitized;
+    const savedRaw = typeof stored === "string" ? stored : "";
+    const savedSanitized = sanitizeBaseUrl(savedRaw);
+
+    if (savedSanitized !== defaultSanitized) {
+      await storageSet({ baseUrl: defaultSanitized });
     }
   } catch (error) {
-    console.error("读取地址失败", error);
-    setResultMessage("读取已保存地址失败", "error");
+    console.warn("同步导航站地址失败", error);
   }
 }
 
 async function refreshAll() {
   if (!state.baseUrl) {
-    setStatus("请先填写导航站地址", "error");
+    setStatus("导航站地址不可用，请联系管理员", "error");
     state.isAuthenticated = false;
     state.context = null;
     renderFolders([]);
@@ -147,11 +170,15 @@ async function refreshContext() {
 
   try {
     const headers = await buildAuthHeaders();
-    const response = await fetch(buildApiUrl("/api/extension/context"), {
+    const { response, resolvedBaseUrl } = await fetchWithBaseFallback("/api/extension/context", {
       method: "GET",
       credentials: "include",
       headers,
     });
+
+    if (typeof resolvedBaseUrl === "string" && resolvedBaseUrl && resolvedBaseUrl !== state.baseUrl) {
+      await applyResolvedBaseUrl(resolvedBaseUrl);
+    }
 
     if (response.status === 401) {
       state.isAuthenticated = false;
@@ -244,7 +271,7 @@ async function handleUpload() {
   }
 
   if (!state.baseUrl) {
-    setResultMessage("请先设置导航站地址", "error");
+    setResultMessage("导航站地址不可用，请联系管理员", "error");
     return;
   }
 
@@ -258,7 +285,7 @@ async function handleUpload() {
       "Content-Type": "application/json",
     });
 
-    const response = await fetch(buildApiUrl("/api/extension/upload-tabs"), {
+    const { response, resolvedBaseUrl } = await fetchWithBaseFallback("/api/extension/upload-tabs", {
       method: "POST",
       credentials: "include",
       headers,
@@ -269,6 +296,10 @@ async function handleUpload() {
         tabsFolderName: folderName,
       }),
     });
+
+    if (typeof resolvedBaseUrl === "string" && resolvedBaseUrl && resolvedBaseUrl !== state.baseUrl) {
+      await applyResolvedBaseUrl(resolvedBaseUrl);
+    }
 
     const payload = await response.json().catch(() => ({}));
 
@@ -490,12 +521,158 @@ function sanitizeBaseUrl(input) {
   }
 }
 
-function buildApiUrl(path) {
-  const base = state.baseUrl.replace(/\/+$/, "");
+function buildApiUrl(path, baseOverride) {
+  const baseCandidate =
+    typeof baseOverride === "string" && baseOverride.trim() ? baseOverride.trim() : state.baseUrl;
+  const sanitizedBase = baseCandidate.replace(/\/+$/, "");
   if (!path.startsWith("/")) {
-    return `${base}/${path}`;
+    return sanitizedBase ? `${sanitizedBase}/${path}` : path;
   }
-  return `${base}${path}`;
+  return sanitizedBase ? `${sanitizedBase}${path}` : path;
+}
+
+function buildApiPathVariants(path) {
+  if (!path || typeof path !== "string") {
+    return [];
+  }
+
+  const variants = [];
+  const seen = new Set();
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  const cleaned = normalized.replace(/\/+$/, "").replace(/\/+/g, "/");
+
+  const pushVariant = (candidate) => {
+    if (!seen.has(candidate)) {
+      seen.add(candidate);
+      variants.push(candidate);
+    }
+  };
+
+  if (cleaned) {
+    pushVariant(cleaned);
+  }
+
+  if (cleaned && !cleaned.endsWith("/")) {
+    pushVariant(`${cleaned}/`);
+  }
+
+  if (cleaned.startsWith("/api/")) {
+    const withoutApi = cleaned.slice(4);
+    if (withoutApi) {
+      pushVariant(withoutApi);
+      if (!withoutApi.endsWith("/")) {
+        pushVariant(`${withoutApi}/`);
+      }
+    }
+  }
+
+  return variants;
+}
+
+function buildBaseUrlCandidates(baseUrl) {
+  const candidates = [];
+  const seen = new Set();
+
+  const appendFromValue = (value) => {
+    if (!value) {
+      return;
+    }
+
+    const sanitized = sanitizeBaseUrl(value);
+    if (!sanitized || seen.has(sanitized)) {
+      return;
+    }
+
+    try {
+      const parsed = new URL(sanitized);
+      const origin = parsed.origin;
+      const pathname = parsed.pathname.replace(/\/+$/, "");
+      const segments = pathname.split("/").filter(Boolean);
+
+      for (let i = segments.length; i >= 0; i -= 1) {
+        const partialPath = segments.slice(0, i).join("/");
+        const candidate = partialPath ? `${origin}/${partialPath}` : origin;
+        if (!seen.has(candidate)) {
+          seen.add(candidate);
+          candidates.push(candidate);
+        }
+      }
+    } catch {
+      seen.add(sanitized);
+      candidates.push(sanitized);
+    }
+  };
+
+  appendFromValue(baseUrl);
+  appendFromValue(DEFAULT_BASE_URL);
+
+  return candidates;
+}
+
+async function fetchWithBaseFallback(path, init = {}) {
+  const candidates = buildBaseUrlCandidates(state.baseUrl);
+  const pathVariants = buildApiPathVariants(path);
+
+  if (!candidates.length || !pathVariants.length) {
+    throw new Error("请先设置导航站地址");
+  }
+
+  let lastNotFoundStatus = null;
+  let lastError = null;
+
+  for (const candidate of candidates) {
+    for (const pathVariant of pathVariants) {
+      const requestInit = { ...init };
+      const url = buildApiUrl(pathVariant, candidate);
+
+      try {
+        const response = await fetch(url, requestInit);
+        if (response.status === 404) {
+          lastNotFoundStatus = response.status;
+          continue;
+        }
+        return { response, resolvedBaseUrl: candidate };
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+      }
+    }
+  }
+
+  if (lastNotFoundStatus) {
+    throw new Error(`加载失败（${lastNotFoundStatus}）`);
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  throw new Error("请求失败，请稍后重试");
+}
+
+async function applyResolvedBaseUrl(resolvedBaseUrl) {
+  const normalized = sanitizeBaseUrl(resolvedBaseUrl);
+  if (!normalized || normalized === state.baseUrl) {
+    return;
+  }
+
+  state.baseUrl = normalized;
+  state.lastAccessToken = null;
+
+  if (elements.baseUrlInput) {
+    elements.baseUrlInput.value = normalized;
+    elements.baseUrlInput.readOnly = true;
+  }
+
+  if (elements.saveBaseUrlButton) {
+    elements.saveBaseUrlButton.disabled = true;
+    elements.saveBaseUrlButton.style.display = "none";
+  }
+
+  try {
+    await storageSet({ baseUrl: normalized });
+  } catch (error) {
+    console.warn("同步导航站地址失败", error);
+  }
 }
 
 function buildDefaultShareName(siteTitle) {
