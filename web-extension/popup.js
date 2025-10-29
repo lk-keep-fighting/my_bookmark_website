@@ -1,8 +1,9 @@
 const DEFAULT_TABS_FOLDER_NAME = "当前打开的页面";
+const DEFAULT_BASE_URL = "https://my-nav.ydtpt.com";
 const SUPABASE_COOKIE_REGEX = /^sb-.*-auth-token$/;
 
 const state = {
-  baseUrl: "",
+  baseUrl: DEFAULT_BASE_URL,
   context: null,
   tabs: [],
   selectedFolderIds: new Set(),
@@ -108,24 +109,46 @@ function bindEvents() {
 }
 
 async function loadBaseUrl() {
+  const defaultSanitized = sanitizeBaseUrl(DEFAULT_BASE_URL);
+
+  if (!defaultSanitized) {
+    state.baseUrl = "";
+    if (elements.baseUrlInput) {
+      elements.baseUrlInput.value = "";
+    }
+    setResultMessage("导航站地址不可用", "error");
+    return;
+  }
+
+  state.baseUrl = defaultSanitized;
+  state.lastAccessToken = null;
+
+  if (elements.baseUrlInput) {
+    elements.baseUrlInput.value = defaultSanitized;
+    elements.baseUrlInput.readOnly = true;
+  }
+
+  if (elements.saveBaseUrlButton) {
+    elements.saveBaseUrlButton.disabled = true;
+    elements.saveBaseUrlButton.style.display = "none";
+  }
+
   try {
     const stored = await storageGet("baseUrl");
-    const saved = typeof stored === "string" ? stored : "";
-    const sanitized = sanitizeBaseUrl(saved);
-    if (sanitized) {
-      state.baseUrl = sanitized;
-      state.lastAccessToken = null;
-      elements.baseUrlInput.value = sanitized;
+    const savedRaw = typeof stored === "string" ? stored : "";
+    const savedSanitized = sanitizeBaseUrl(savedRaw);
+
+    if (savedSanitized !== defaultSanitized) {
+      await storageSet({ baseUrl: defaultSanitized });
     }
   } catch (error) {
-    console.error("读取地址失败", error);
-    setResultMessage("读取已保存地址失败", "error");
+    console.warn("同步导航站地址失败", error);
   }
 }
 
 async function refreshAll() {
   if (!state.baseUrl) {
-    setStatus("请先填写导航站地址", "error");
+    setStatus("导航站地址不可用，请联系管理员", "error");
     state.isAuthenticated = false;
     state.context = null;
     renderFolders([]);
@@ -576,7 +599,17 @@ async function applyResolvedBaseUrl(resolvedBaseUrl) {
   }
 
   state.baseUrl = normalized;
-  elements.baseUrlInput.value = normalized;
+  state.lastAccessToken = null;
+
+  if (elements.baseUrlInput) {
+    elements.baseUrlInput.value = normalized;
+    elements.baseUrlInput.readOnly = true;
+  }
+
+  if (elements.saveBaseUrlButton) {
+    elements.saveBaseUrlButton.disabled = true;
+    elements.saveBaseUrlButton.style.display = "none";
+  }
 
   try {
     await storageSet({ baseUrl: normalized });
