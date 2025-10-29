@@ -19,6 +19,7 @@ const state = {
   bookmarksError: null,
   lastAccessToken: null,
   siteTitle: null,
+  userEmail: null,
 };
 
 const elements = {};
@@ -202,14 +203,69 @@ async function refreshBookmarkTree() {
 
 async function refreshAuthState() {
   state.isAuthenticated = null;
+  state.userEmail = null;
   updateStatusBanner();
 
+  let headers;
   try {
-    const token = await resolveAccessToken();
-    state.isAuthenticated = Boolean(token);
+    headers = await buildAuthHeaders();
   } catch (error) {
     console.warn("检测登录状态失败", error);
     state.isAuthenticated = false;
+    state.userEmail = null;
+    updateStatusBanner();
+    updateSubmitState();
+    return;
+  }
+
+  const authorizationHeader =
+    typeof headers.Authorization === "string" ? headers.Authorization.trim() : "";
+
+  if (!authorizationHeader) {
+    state.isAuthenticated = false;
+    state.userEmail = null;
+    updateStatusBanner();
+    updateSubmitState();
+    return;
+  }
+
+  try {
+    const { response, resolvedBaseUrl } = await fetchWithBaseFallback("/api/extension/context", {
+      method: "GET",
+      credentials: "include",
+      headers,
+    });
+
+    if (typeof resolvedBaseUrl === "string" && resolvedBaseUrl && resolvedBaseUrl !== state.baseUrl) {
+      await applyResolvedBaseUrl(resolvedBaseUrl);
+    }
+
+    const payload = await response.json().catch(() => null);
+
+    if (response.status === 401) {
+      state.isAuthenticated = false;
+      state.userEmail = null;
+      return;
+    }
+
+    if (!response.ok) {
+      const message =
+        payload && typeof payload.error === "string"
+          ? payload.error
+          : `检测登录状态失败（${response.status}）`;
+      throw new Error(message);
+    }
+
+    state.isAuthenticated = true;
+    state.userEmail = typeof payload?.userEmail === "string" ? payload.userEmail.trim() || null : null;
+
+    if (payload && typeof payload.siteTitle === "string" && payload.siteTitle.trim()) {
+      state.siteTitle = payload.siteTitle.trim();
+    }
+  } catch (error) {
+    console.warn("检测登录状态失败", error);
+    state.isAuthenticated = false;
+    state.userEmail = null;
   } finally {
     updateStatusBanner();
     updateSubmitState();
@@ -802,7 +858,11 @@ function updateStatusBanner() {
   let type = "info";
 
   if (state.isAuthenticated === true) {
-    parts.push("已登录导航站");
+    if (state.userEmail) {
+      parts.push(`已登录：${state.userEmail}`);
+    } else {
+      parts.push("已登录导航站");
+    }
   } else if (state.isAuthenticated === false) {
     parts.push("未检测到导航站登录");
     type = "error";
