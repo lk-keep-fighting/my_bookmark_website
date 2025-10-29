@@ -172,7 +172,14 @@ async function refreshBookmarkTree() {
   renderBookmarkTree();
   updateStatusBanner();
 
-  const hasPermission = await checkBookmarksPermission();
+  let hasPermission = false;
+  try {
+    hasPermission = await checkBookmarksPermission();
+  } catch (error) {
+    console.warn("检测书签权限失败", error);
+    hasPermission = false;
+  }
+
   state.hasBookmarkPermission = hasPermission;
   updateBookmarkPermissionButton();
 
@@ -181,6 +188,7 @@ async function refreshBookmarkTree() {
     state.siteTitle = null;
     state.expandedFolderIds.clear();
     state.selectedBookmarkIds.clear();
+    state.bookmarksLoaded = false;
     state.bookmarksError = "尚未授权访问浏览器书签，请点击下方按钮进行授权";
     state.isLoadingBookmarks = false;
     renderBookmarkTree();
@@ -237,22 +245,11 @@ async function refreshAuthState() {
   state.userEmail = null;
   updateStatusBanner();
 
-  let headers;
+  let headers = {};
   try {
     headers = await buildAuthHeaders();
   } catch (error) {
     console.warn("检测登录状态失败", error);
-    state.isAuthenticated = false;
-    state.userEmail = null;
-    updateStatusBanner();
-    updateSubmitState();
-    return;
-  }
-
-  const authorizationHeader =
-    typeof headers.Authorization === "string" ? headers.Authorization.trim() : "";
-
-  if (!authorizationHeader) {
     state.isAuthenticated = false;
     state.userEmail = null;
     updateStatusBanner();
@@ -320,7 +317,11 @@ async function handleBookmarksPermissionRequest() {
       await refreshBookmarkTree();
     } else {
       state.hasBookmarkPermission = false;
+      state.bookmarkTree = [];
+      state.bookmarksLoaded = false;
       state.bookmarksError = "尚未授权访问浏览器书签，请点击下方按钮进行授权";
+      state.expandedFolderIds.clear();
+      state.selectedBookmarkIds.clear();
       updateBookmarkPermissionButton();
       renderBookmarkTree();
       updateStatusBanner();
@@ -989,6 +990,7 @@ function updateStatusBanner() {
     }
   } else if (state.isAuthenticated === false) {
     parts.push("未检测到导航站登录");
+    type = "error";
   } else {
     parts.push("正在检测登录状态…");
   }

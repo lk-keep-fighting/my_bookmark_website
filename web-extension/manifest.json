@@ -10,8 +10,7 @@
   "permissions": [
     "tabs",
     "storage",
-    "cookies",
-    "permissions"
+    "cookies"
   ],
   "optional_permissions": [
     "bookmarks"
