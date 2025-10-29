@@ -3,16 +3,18 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import type { Database } from "./types";
 
+type AppSupabaseClient = SupabaseClient<Database, "public", any>;
+
 export type AuthenticatedSupabaseContext =
   | {
       type: "session";
-      supabase: SupabaseClient<Database>;
+      supabase: AppSupabaseClient;
       user: User;
       accessToken: string | null;
     }
   | {
       type: "bearer";
-      supabase: SupabaseClient<Database>;
+      supabase: AppSupabaseClient;
       user: User;
       accessToken: string;
     };
