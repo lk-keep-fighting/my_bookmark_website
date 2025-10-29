@@ -271,7 +271,7 @@ async function handleUpload() {
   }
 
   if (!state.baseUrl) {
-    setResultMessage("请先设置导航站地址", "error");
+    setResultMessage("导航站地址不可用，请联系管理员", "error");
     return;
   }
 
@@ -285,7 +285,7 @@ async function handleUpload() {
       "Content-Type": "application/json",
     });
 
-    const response = await fetch(buildApiUrl("/api/extension/upload-tabs"), {
+    const { response, resolvedBaseUrl } = await fetchWithBaseFallback("/api/extension/upload-tabs", {
       method: "POST",
       credentials: "include",
       headers,
@@ -296,6 +296,10 @@ async function handleUpload() {
         tabsFolderName: folderName,
       }),
     });
+
+    if (typeof resolvedBaseUrl === "string" && resolvedBaseUrl && resolvedBaseUrl !== state.baseUrl) {
+      await applyResolvedBaseUrl(resolvedBaseUrl);
+    }
 
     const payload = await response.json().catch(() => ({}));
 
@@ -527,38 +531,89 @@ function buildApiUrl(path, baseOverride) {
   return sanitizedBase ? `${sanitizedBase}${path}` : path;
 }
 
-function buildBaseUrlCandidates(baseUrl) {
-  if (!baseUrl) {
+function buildApiPathVariants(path) {
+  if (!path || typeof path !== "string") {
     return [];
   }
 
+  const variants = [];
+  const seen = new Set();
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  const cleaned = normalized.replace(/\/+$/, "").replace(/\/+/g, "/");
+
+  const pushVariant = (candidate) => {
+    if (!seen.has(candidate)) {
+      seen.add(candidate);
+      variants.push(candidate);
+    }
+  };
+
+  if (cleaned) {
+    pushVariant(cleaned);
+  }
+
+  if (cleaned && !cleaned.endsWith("/")) {
+    pushVariant(`${cleaned}/`);
+  }
+
+  if (cleaned.startsWith("/api/")) {
+    const withoutApi = cleaned.slice(4);
+    if (withoutApi) {
+      pushVariant(withoutApi);
+      if (!withoutApi.endsWith("/")) {
+        pushVariant(`${withoutApi}/`);
+      }
+    }
+  }
+
+  return variants;
+}
+
+function buildBaseUrlCandidates(baseUrl) {
   const candidates = [];
   const seen = new Set();
 
-  try {
-    const parsed = new URL(baseUrl);
-    const origin = parsed.origin;
-    const pathname = parsed.pathname.replace(/\/+$/, "");
-    const segments = pathname.split("/").filter(Boolean);
-
-    for (let i = segments.length; i >= 0; i -= 1) {
-      const partialPath = segments.slice(0, i).join("/");
-      const candidate = partialPath ? `${origin}/${partialPath}` : origin;
-      if (!seen.has(candidate)) {
-        seen.add(candidate);
-        candidates.push(candidate);
-      }
+  const appendFromValue = (value) => {
+    if (!value) {
+      return;
     }
 
-    return candidates;
-  } catch {
-    return [baseUrl];
-  }
+    const sanitized = sanitizeBaseUrl(value);
+    if (!sanitized || seen.has(sanitized)) {
+      return;
+    }
+
+    try {
+      const parsed = new URL(sanitized);
+      const origin = parsed.origin;
+      const pathname = parsed.pathname.replace(/\/+$/, "");
+      const segments = pathname.split("/").filter(Boolean);
+
+      for (let i = segments.length; i >= 0; i -= 1) {
+        const partialPath = segments.slice(0, i).join("/");
+        const candidate = partialPath ? `${origin}/${partialPath}` : origin;
+        if (!seen.has(candidate)) {
+          seen.add(candidate);
+          candidates.push(candidate);
+        }
+      }
+    } catch {
+      seen.add(sanitized);
+      candidates.push(sanitized);
+    }
+  };
+
+  appendFromValue(baseUrl);
+  appendFromValue(DEFAULT_BASE_URL);
+
+  return candidates;
 }
 
 async function fetchWithBaseFallback(path, init = {}) {
   const candidates = buildBaseUrlCandidates(state.baseUrl);
-  if (!candidates.length) {
+  const pathVariants = buildApiPathVariants(path);
+
+  if (!candidates.length || !pathVariants.length) {
     throw new Error("请先设置导航站地址");
   }
 
@@ -566,18 +621,20 @@ async function fetchWithBaseFallback(path, init = {}) {
   let lastError = null;
 
   for (const candidate of candidates) {
-    const requestInit = { ...init };
-    const url = buildApiUrl(path, candidate);
+    for (const pathVariant of pathVariants) {
+      const requestInit = { ...init };
+      const url = buildApiUrl(pathVariant, candidate);
 
-    try {
-      const response = await fetch(url, requestInit);
-      if (response.status === 404) {
-        lastNotFoundStatus = response.status;
-        continue;
+      try {
+        const response = await fetch(url, requestInit);
+        if (response.status === 404) {
+          lastNotFoundStatus = response.status;
+          continue;
+        }
+        return { response, resolvedBaseUrl: candidate };
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
       }
-      return { response, resolvedBaseUrl: candidate };
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
     }
   }
 

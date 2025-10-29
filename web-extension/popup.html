@@ -15,10 +15,16 @@
       <section class="section">
         <label class="section-label" for="base-url-input">导航站地址</label>
         <div class="inline">
-          <input id="base-url-input" type="text" placeholder="例如：https://nav.example.com" />
-          <button id="save-base-url" class="primary-button">保存</button>
+          <input
+            id="base-url-input"
+            type="text"
+            value="https://my-nav.ydtpt.com"
+            readonly
+            aria-readonly="true"
+          />
+          <button id="save-base-url" class="primary-button" style="display: none" disabled>保存</button>
         </div>
-        <p class="section-hint">需填写已登录的导航站域名，插件会复用浏览器中的登录状态。</p>
+        <p class="section-hint">插件已自动使用导航站 https://my-nav.ydtpt.com，无需手动调整。</p>
       </section>
 
       <section class="section status">
