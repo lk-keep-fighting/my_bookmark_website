@@ -8,7 +8,7 @@
 
 body {
   margin: 0;
-  width: 380px;
+  width: 420px;
   font-family: "SF Pro SC", "PingFang SC", "Segoe UI", system-ui, -apple-system, sans-serif;
   background: #f8fafc;
   color: #0f172a;
@@ -175,9 +175,9 @@ input[type="text"]:focus {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 180px;
+  max-height: 220px;
   overflow-y: auto;
-  padding-right: 4px;
+  padding-right: 6px;
 }
 
 .list::-webkit-scrollbar {
@@ -187,6 +187,115 @@ input[type="text"]:focus {
 .list::-webkit-scrollbar-thumb {
   background: rgba(148, 163, 184, 0.4);
   border-radius: 999px;
+}
+
+.tree-container {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.tree-container::-webkit-scrollbar {
+  width: 6px;
+}
+
+.tree-container::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.4);
+  border-radius: 999px;
+}
+
+.tree-node {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tree-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.8);
+}
+
+.tree-row:hover {
+  background: rgba(226, 232, 240, 0.7);
+}
+
+.tree-row input[type="checkbox"] {
+  margin-top: 2px;
+}
+
+.tree-row .tree-toggle {
+  border: none;
+  background: none;
+  cursor: pointer;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #64748b;
+  flex-shrink: 0;
+}
+
+.tree-row .tree-toggle.hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.tree-row .tree-toggle:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+
+.tree-row .tree-icon {
+  font-size: 14px;
+  color: #1d4ed8;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.tree-row .tree-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.tree-row .tree-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e293b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree-row[data-type="bookmark"] .tree-title {
+  font-weight: 500;
+}
+
+.tree-row .tree-desc {
+  font-size: 12px;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree-children {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-left: 28px;
 }
 
 .checkbox-item {

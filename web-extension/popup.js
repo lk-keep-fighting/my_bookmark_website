@@ -1,17 +1,24 @@
 const DEFAULT_TABS_FOLDER_NAME = "当前打开的页面";
 const DEFAULT_BASE_URL = "https://my-nav.ydtpt.com";
 const SUPABASE_COOKIE_REGEX = /^sb-.*-auth-token$/;
+const TREE_TOGGLE_SYMBOL = "▸";
+const FOLDER_ICON = "📂";
+const BOOKMARK_ICON = "🔗";
 
 const state = {
   baseUrl: DEFAULT_BASE_URL,
-  context: null,
   tabs: [],
-  selectedFolderIds: new Set(),
+  bookmarkTree: [],
+  selectedBookmarkIds: new Set(),
   selectedTabIds: new Set(),
+  expandedFolderIds: new Set(),
   isUploading: false,
-  isLoadingContext: false,
-  isAuthenticated: false,
+  isLoadingBookmarks: false,
+  isAuthenticated: null,
+  bookmarksLoaded: false,
+  bookmarksError: null,
   lastAccessToken: null,
+  siteTitle: null,
 };
 
 const elements = {};
@@ -74,16 +81,11 @@ function bindEvents() {
   });
 
   elements.foldersSelectAllButton.addEventListener("click", () => {
-    if (!state.context?.folderOptions?.length) return;
-    state.selectedFolderIds = new Set(state.context.folderOptions.map((option) => option.id));
-    renderFolders(state.context.folderOptions);
-    updateSubmitState();
+    selectAllBookmarks();
   });
 
   elements.foldersClearButton.addEventListener("click", () => {
-    state.selectedFolderIds.clear();
-    renderFolders(state.context?.folderOptions ?? []);
-    updateSubmitState();
+    clearBookmarkSelection();
   });
 
   elements.tabsSelectAllButton.addEventListener("click", () => {
@@ -147,79 +149,425 @@ async function loadBaseUrl() {
 }
 
 async function refreshAll() {
-  if (!state.baseUrl) {
-    setStatus("导航站地址不可用，请联系管理员", "error");
-    state.isAuthenticated = false;
-    state.context = null;
-    renderFolders([]);
-    await refreshTabs();
-    ensureDefaultInputs();
-    updateSubmitState();
-    return;
-  }
-
-  await refreshContext();
+  await refreshBookmarkTree();
   await refreshTabs();
+  await refreshAuthState();
   ensureDefaultInputs();
   updateSubmitState();
 }
 
-async function refreshContext() {
-  state.isLoadingContext = true;
-  setStatus("加载目录中…");
+async function refreshBookmarkTree() {
+  state.isLoadingBookmarks = true;
+  state.bookmarksError = null;
+  state.bookmarksLoaded = false;
+  renderBookmarkTree();
+  updateStatusBanner();
 
   try {
-    const headers = await buildAuthHeaders();
-    const { response, resolvedBaseUrl } = await fetchWithBaseFallback("/api/extension/context", {
-      method: "GET",
-      credentials: "include",
-      headers,
-    });
+    const rawTree = await getBookmarkTree();
+    const normalized = normalizeBookmarkTree(rawTree);
+    state.bookmarkTree = normalized;
+    state.bookmarksLoaded = true;
 
-    if (typeof resolvedBaseUrl === "string" && resolvedBaseUrl && resolvedBaseUrl !== state.baseUrl) {
-      await applyResolvedBaseUrl(resolvedBaseUrl);
+    const allFolderIds = collectAllFolderIds(normalized);
+    if (state.expandedFolderIds.size === 0) {
+      state.expandedFolderIds = new Set(allFolderIds);
+    } else {
+      const retained = allFolderIds.filter((id) => state.expandedFolderIds.has(id));
+      state.expandedFolderIds = new Set(retained.length > 0 ? retained : allFolderIds);
     }
 
-    if (response.status === 401) {
-      state.isAuthenticated = false;
-      state.context = null;
-      renderFolders([]);
-      setStatus("未登录，请先在导航站完成登录", "error");
+    const availableBookmarkIds = new Set(collectAllBookmarkIds(normalized));
+    const previousSelection = Array.from(state.selectedBookmarkIds);
+    state.selectedBookmarkIds = new Set(previousSelection.filter((id) => availableBookmarkIds.has(id)));
+
+    state.siteTitle = deriveSiteTitleFromBookmarks(normalized);
+
+    renderBookmarkTree();
+  } catch (error) {
+    console.error("加载浏览器书签失败", error);
+    state.bookmarkTree = [];
+    state.siteTitle = null;
+    state.expandedFolderIds.clear();
+    state.selectedBookmarkIds.clear();
+    const message = error instanceof Error ? error.message : "读取浏览器书签失败";
+    state.bookmarksError = message;
+    renderBookmarkTree();
+  } finally {
+    state.isLoadingBookmarks = false;
+    updateStatusBanner();
+    updateSubmitState();
+  }
+}
+
+async function refreshAuthState() {
+  state.isAuthenticated = null;
+  updateStatusBanner();
+
+  try {
+    const token = await resolveAccessToken();
+    state.isAuthenticated = Boolean(token);
+  } catch (error) {
+    console.warn("检测登录状态失败", error);
+    state.isAuthenticated = false;
+  } finally {
+    updateStatusBanner();
+    updateSubmitState();
+  }
+}
+
+async function getBookmarkTree() {
+  if (typeof chrome === "undefined" || !chrome.bookmarks || typeof chrome.bookmarks.getTree !== "function") {
+    throw new Error("当前浏览器不支持读取书签或插件缺少书签权限");
+  }
+
+  return new Promise((resolve, reject) => {
+    chrome.bookmarks.getTree((nodes) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message || "读取浏览器书签失败"));
+        return;
+      }
+      resolve(Array.isArray(nodes) ? nodes : []);
+    });
+  });
+}
+
+function normalizeBookmarkTree(rawTree) {
+  const roots = Array.isArray(rawTree) ? rawTree : [];
+  const normalized = [];
+
+  const mapNode = (node) => {
+    if (!node || typeof node !== "object") {
+      return null;
+    }
+
+    const idRaw = typeof node.id === "string" ? node.id : node.id != null ? String(node.id) : "";
+    if (!idRaw) {
+      return null;
+    }
+
+    const title = typeof node.title === "string" ? node.title : "";
+
+    if (typeof node.url === "string" && node.url) {
+      return {
+        id: idRaw,
+        title,
+        type: "bookmark",
+        url: node.url,
+      };
+    }
+
+    const children = Array.isArray(node.children)
+      ? node.children.map(mapNode).filter(Boolean)
+      : [];
+
+    return {
+      id: idRaw,
+      title,
+      type: "folder",
+      children,
+    };
+  };
+
+  for (const root of roots) {
+    if (Array.isArray(root.children)) {
+      for (const child of root.children) {
+        const mapped = mapNode(child);
+        if (mapped) {
+          normalized.push(mapped);
+        }
+      }
+    } else {
+      const mapped = mapNode(root);
+      if (mapped) {
+        normalized.push(mapped);
+      }
+    }
+  }
+
+  return normalized;
+}
+
+function renderBookmarkTree() {
+  const container = elements.foldersContainer;
+  if (!container) {
+    return;
+  }
+
+  container.innerHTML = "";
+
+  if (state.isLoadingBookmarks) {
+    appendEmptyHint(container, "正在加载浏览器书签…");
+    return;
+  }
+
+  if (state.bookmarksError) {
+    appendEmptyHint(container, state.bookmarksError);
+    return;
+  }
+
+  if (!state.bookmarkTree.length) {
+    appendEmptyHint(container, "未在浏览器中发现书签");
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  state.bookmarkTree.forEach((node) => {
+    fragment.appendChild(createBookmarkNodeElement(node));
+  });
+  container.appendChild(fragment);
+}
+
+function createBookmarkNodeElement(node) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "tree-node";
+
+  const row = document.createElement("div");
+  row.className = "tree-row";
+  row.dataset.type = node.type;
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "tree-toggle";
+  toggle.textContent = TREE_TOGGLE_SYMBOL;
+
+  const hasChildren = node.type === "folder" && Array.isArray(node.children) && node.children.length > 0;
+  if (hasChildren) {
+    const isExpanded = state.expandedFolderIds.has(node.id);
+    toggle.textContent = isExpanded ? "▾" : TREE_TOGGLE_SYMBOL;
+    toggle.setAttribute("aria-expanded", String(isExpanded));
+    toggle.setAttribute("aria-label", isExpanded ? "折叠目录" : "展开目录");
+    toggle.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (state.expandedFolderIds.has(node.id)) {
+        state.expandedFolderIds.delete(node.id);
+      } else {
+        state.expandedFolderIds.add(node.id);
+      }
+      renderBookmarkTree();
+    });
+  } else {
+    toggle.classList.add("hidden");
+    toggle.textContent = "";
+    toggle.disabled = true;
+    toggle.setAttribute("aria-hidden", "true");
+  }
+
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+
+  const icon = document.createElement("span");
+  icon.className = "tree-icon";
+  icon.textContent = node.type === "folder" ? FOLDER_ICON : BOOKMARK_ICON;
+
+  const content = document.createElement("div");
+  content.className = "tree-content";
+
+  const title = document.createElement("span");
+  title.className = "tree-title";
+  const displayTitle = (node.title || "").trim() || (node.type === "folder" ? "未命名目录" : "未命名书签");
+  title.textContent = displayTitle;
+  content.appendChild(title);
+
+  if (node.type === "folder") {
+    const desc = document.createElement("span");
+    desc.className = "tree-desc";
+    const bookmarkCount = countDescendantBookmarks(node);
+    desc.textContent = bookmarkCount > 0 ? `${bookmarkCount} 个书签` : "空目录";
+    content.appendChild(desc);
+  } else if (node.url) {
+    const desc = document.createElement("span");
+    desc.className = "tree-desc";
+    desc.textContent = node.url;
+    content.appendChild(desc);
+  }
+
+  if (node.type === "bookmark") {
+    const isSelected = state.selectedBookmarkIds.has(node.id);
+    checkbox.checked = isSelected;
+    checkbox.addEventListener("change", (event) => {
+      if (event.target.checked) {
+        state.selectedBookmarkIds.add(node.id);
+      } else {
+        state.selectedBookmarkIds.delete(node.id);
+      }
+      renderBookmarkTree();
+      updateSubmitState();
+    });
+  } else {
+    const descendantBookmarkIds = collectDescendantBookmarkIds(node);
+    if (descendantBookmarkIds.length === 0) {
+      checkbox.disabled = true;
+    } else {
+      const selectedCount = descendantBookmarkIds.reduce(
+        (count, id) => (state.selectedBookmarkIds.has(id) ? count + 1 : count),
+        0,
+      );
+      const allSelected = selectedCount === descendantBookmarkIds.length;
+      const partiallySelected = selectedCount > 0 && !allSelected;
+      checkbox.checked = allSelected;
+      checkbox.indeterminate = partiallySelected;
+      checkbox.addEventListener("change", (event) => {
+        const shouldSelect = event.target.checked;
+        descendantBookmarkIds.forEach((id) => {
+          if (shouldSelect) {
+            state.selectedBookmarkIds.add(id);
+          } else {
+            state.selectedBookmarkIds.delete(id);
+          }
+        });
+        renderBookmarkTree();
+        updateSubmitState();
+      });
+    }
+  }
+
+  row.appendChild(toggle);
+  row.appendChild(checkbox);
+  row.appendChild(icon);
+  row.appendChild(content);
+  wrapper.appendChild(row);
+
+  if (node.type === "folder" && hasChildren && state.expandedFolderIds.has(node.id)) {
+    const childrenContainer = document.createElement("div");
+    childrenContainer.className = "tree-children";
+    node.children.forEach((child) => {
+      childrenContainer.appendChild(createBookmarkNodeElement(child));
+    });
+    wrapper.appendChild(childrenContainer);
+  }
+
+  return wrapper;
+}
+
+function selectAllBookmarks() {
+  if (!state.bookmarkTree.length) {
+    return;
+  }
+  const allBookmarkIds = collectAllBookmarkIds(state.bookmarkTree);
+  state.selectedBookmarkIds = new Set(allBookmarkIds);
+  renderBookmarkTree();
+  updateSubmitState();
+}
+
+function clearBookmarkSelection() {
+  state.selectedBookmarkIds.clear();
+  renderBookmarkTree();
+  updateSubmitState();
+}
+
+function collectAllBookmarkIds(nodes) {
+  const result = [];
+  const traverse = (node) => {
+    if (!node) {
       return;
     }
-
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      const message = typeof payload.error === "string" ? payload.error : `加载失败（${response.status}）`;
-      throw new Error(message);
+    if (node.type === "bookmark") {
+      result.push(node.id);
+    } else if (node.type === "folder" && Array.isArray(node.children)) {
+      node.children.forEach(traverse);
     }
+  };
 
-    const data = await response.json();
-    state.context = data;
-    state.isAuthenticated = true;
+  nodes.forEach(traverse);
+  return result;
+}
 
-    if (Array.isArray(data.folderOptions)) {
-      const existingSelection = new Set(state.selectedFolderIds);
-      state.selectedFolderIds = new Set(
-        data.folderOptions
-          .map((option) => option.id)
-          .filter((id) => existingSelection.has(id)),
-      );
-      renderFolders(data.folderOptions);
-    } else {
-      renderFolders([]);
+function collectAllFolderIds(nodes) {
+  const result = [];
+  const traverse = (node) => {
+    if (!node) {
+      return;
     }
+    if (node.type === "folder") {
+      result.push(node.id);
+      if (Array.isArray(node.children)) {
+        node.children.forEach(traverse);
+      }
+    }
+  };
 
-    setStatus(data.userEmail ? `已登录：${data.userEmail}` : "已登录");
-  } catch (error) {
-    console.error("加载目录失败", error);
-    state.isAuthenticated = false;
-    state.context = null;
-    renderFolders([]);
-    setStatus(error instanceof Error ? error.message : "加载目录失败", "error");
-  } finally {
-    state.isLoadingContext = false;
+  nodes.forEach(traverse);
+  return result;
+}
+
+function collectSelectedBookmarks(nodes, selectedIds) {
+  const results = [];
+  const traverse = (node) => {
+    if (!node) {
+      return;
+    }
+    if (node.type === "bookmark" && node.url && selectedIds.has(node.id)) {
+      results.push(node);
+    }
+    if (node.type === "folder" && Array.isArray(node.children)) {
+      node.children.forEach(traverse);
+    }
+  };
+
+  nodes.forEach(traverse);
+  return results;
+}
+
+function collectDescendantBookmarkIds(node) {
+  if (!node || node.type !== "folder") {
+    return [];
   }
+
+  const ids = [];
+  const stack = Array.isArray(node.children) ? [...node.children] : [];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) {
+      continue;
+    }
+    if (current.type === "bookmark") {
+      ids.push(current.id);
+    } else if (current.type === "folder" && Array.isArray(current.children)) {
+      stack.push(...current.children);
+    }
+  }
+  return ids;
+}
+
+function countDescendantBookmarks(node) {
+  return collectDescendantBookmarkIds(node).length;
+}
+
+function deriveSiteTitleFromBookmarks(nodes) {
+  let fallback = null;
+
+  const traverse = (node) => {
+    if (!node || node.type !== "folder") {
+      return null;
+    }
+    const trimmed = (node.title || "").trim();
+    if (trimmed) {
+      if (!fallback) {
+        fallback = trimmed;
+      }
+      return trimmed;
+    }
+    if (Array.isArray(node.children)) {
+      for (const child of node.children) {
+        const result = traverse(child);
+        if (result) {
+          return result;
+        }
+      }
+    }
+    return null;
+  };
+
+  for (const node of nodes) {
+    const result = traverse(node);
+    if (result) {
+      return result;
+    }
+  }
+
+  return fallback;
 }
 
 async function refreshTabs() {
@@ -246,12 +594,14 @@ async function refreshTabs() {
 }
 
 async function handleUpload() {
-  if (state.isUploading) return;
+  if (state.isUploading) {
+    return;
+  }
 
   const trimmedName = elements.shareNameInput.value.trim();
-  const folderName = elements.tabsFolderNameInput.value.trim();
-  const selectedFolderIds = Array.from(state.selectedFolderIds);
-  const selectedTabs = state.tabs
+  const folderName = elements.tabsFolderNameInput.value.trim() || DEFAULT_TABS_FOLDER_NAME;
+
+  const selectedTabPayload = state.tabs
     .filter((tab) => state.selectedTabIds.has(getTabId(tab)))
     .map((tab) => ({
       title: (tab.title || "").trim(),
@@ -260,13 +610,41 @@ async function handleUpload() {
     }))
     .filter((tab) => tab.url && isShareableUrl(tab.url));
 
+  const selectedBookmarkNodes = collectSelectedBookmarks(state.bookmarkTree, state.selectedBookmarkIds);
+  const selectedBookmarkPayload = selectedBookmarkNodes
+    .map((bookmark) => ({
+      title: (bookmark.title || "").trim() || bookmark.url || "",
+      url: bookmark.url || "",
+    }))
+    .filter((bookmark) => bookmark.url && isShareableUrl(bookmark.url));
+
+  const combinedTabs = [];
+  const urlToIndex = new Map();
+
+  [...selectedBookmarkPayload, ...selectedTabPayload].forEach((item) => {
+    const urlKey = (item.url || "").trim();
+    if (!urlKey) {
+      return;
+    }
+    if (!urlToIndex.has(urlKey)) {
+      combinedTabs.push({ ...item, url: urlKey });
+      urlToIndex.set(urlKey, combinedTabs.length - 1);
+      return;
+    }
+    const index = urlToIndex.get(urlKey);
+    const existing = combinedTabs[index];
+    if (!existing.favIconUrl && item.favIconUrl) {
+      combinedTabs[index] = { ...item, url: urlKey };
+    }
+  });
+
   if (!trimmedName) {
     setResultMessage("请填写分享站名称", "error");
     return;
   }
 
-  if (selectedFolderIds.length === 0 && selectedTabs.length === 0) {
-    setResultMessage("请至少选择一个目录或标签页", "error");
+  if (combinedTabs.length === 0) {
+    setResultMessage("请至少选择一个书签或标签页", "error");
     return;
   }
 
@@ -291,8 +669,8 @@ async function handleUpload() {
       headers,
       body: JSON.stringify({
         name: trimmedName,
-        folderIds: selectedFolderIds,
-        tabs: selectedTabs,
+        folderIds: [],
+        tabs: combinedTabs,
         tabsFolderName: folderName,
       }),
     });
@@ -306,7 +684,7 @@ async function handleUpload() {
     if (response.status === 401) {
       setResultMessage("未登录，请先在导航站登录后重试", "error");
       state.isAuthenticated = false;
-      await refreshContext();
+      await refreshAuthState();
       return;
     }
 
@@ -315,11 +693,7 @@ async function handleUpload() {
       throw new Error(message);
     }
 
-    if (payload.createdFolder?.id) {
-      state.selectedFolderIds.add(payload.createdFolder.id);
-    }
-
-    await refreshContext();
+    await refreshBookmarkTree();
 
     const shareSlug = payload?.item?.shareSlug;
     const shareUrl = shareSlug ? `${state.baseUrl.replace(/\/+$/, "")}/share/${shareSlug}` : "";
@@ -334,67 +708,6 @@ async function handleUpload() {
     elements.uploadButton.textContent = "上传生成分享站";
     updateSubmitState();
   }
-}
-
-function renderFolders(options) {
-  const container = elements.foldersContainer;
-  container.innerHTML = "";
-
-  if (!state.isAuthenticated) {
-    appendEmptyHint(container, "未登录或未能获取目录");
-    return;
-  }
-
-  if (!options || options.length === 0) {
-    const hint = state.context?.hasDocument
-      ? "当前书签暂无可分享目录"
-      : "请先在导航站导入浏览器书签";
-    appendEmptyHint(container, hint);
-    return;
-  }
-
-  options.forEach((option) => {
-    const id = option.id;
-    const wrapper = document.createElement("label");
-    wrapper.className = "checkbox-item";
-
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.value = id;
-    checkbox.checked = state.selectedFolderIds.has(id);
-    checkbox.addEventListener("change", (event) => {
-      if (event.target.checked) {
-        state.selectedFolderIds.add(id);
-      } else {
-        state.selectedFolderIds.delete(id);
-      }
-      updateSubmitState();
-    });
-
-    const content = document.createElement("div");
-    content.className = "checkbox-content";
-
-    const title = document.createElement("span");
-    title.className = "checkbox-title";
-    title.textContent = option.label || "未命名目录";
-
-    const desc = document.createElement("span");
-    desc.className = "checkbox-desc";
-    if (typeof option.directBookmarkCount === "number") {
-      desc.textContent = `${option.directBookmarkCount} 个直接书签`;
-    } else {
-      desc.textContent = "";
-    }
-
-    content.appendChild(title);
-    if (desc.textContent) {
-      content.appendChild(desc);
-    }
-
-    wrapper.appendChild(checkbox);
-    wrapper.appendChild(content);
-    container.appendChild(wrapper);
-  });
 }
 
 function renderTabsList() {
@@ -457,7 +770,7 @@ function appendEmptyHint(container, text) {
 
 function ensureDefaultInputs() {
   if (!elements.shareNameInput.value.trim()) {
-    elements.shareNameInput.value = buildDefaultShareName(state.context?.siteTitle);
+    elements.shareNameInput.value = buildDefaultShareName(state.siteTitle);
   }
 
   if (!elements.tabsFolderNameInput.value.trim()) {
@@ -466,8 +779,38 @@ function ensureDefaultInputs() {
 }
 
 function prepareNextShare() {
-  elements.shareNameInput.value = buildDefaultShareName(state.context?.siteTitle);
+  elements.shareNameInput.value = buildDefaultShareName(state.siteTitle);
   elements.tabsFolderNameInput.value = DEFAULT_TABS_FOLDER_NAME;
+}
+
+function updateStatusBanner() {
+  if (state.bookmarksError) {
+    setStatus(state.bookmarksError, "error");
+    return;
+  }
+
+  const parts = [];
+
+  if (state.isLoadingBookmarks) {
+    parts.push("正在加载浏览器书签…");
+  } else if (state.bookmarksLoaded) {
+    parts.push("已加载浏览器书签");
+  } else {
+    parts.push("尚未加载浏览器书签");
+  }
+
+  let type = "info";
+
+  if (state.isAuthenticated === true) {
+    parts.push("已登录导航站");
+  } else if (state.isAuthenticated === false) {
+    parts.push("未检测到导航站登录");
+    type = "error";
+  } else {
+    parts.push("正在检测登录状态…");
+  }
+
+  setStatus(parts.join(" · "), type);
 }
 
 function setStatus(text, type = "info") {
@@ -502,7 +845,7 @@ function showSuccessMessage(shareUrl) {
 }
 
 function updateSubmitState() {
-  const hasSelection = state.selectedFolderIds.size > 0 || state.selectedTabIds.size > 0;
+  const hasSelection = state.selectedBookmarkIds.size > 0 || state.selectedTabIds.size > 0;
   const hasName = Boolean(elements.shareNameInput.value.trim());
   const ready = hasSelection && hasName && state.isAuthenticated && !state.isUploading && Boolean(state.baseUrl);
   elements.uploadButton.disabled = !ready;
@@ -522,8 +865,7 @@ function sanitizeBaseUrl(input) {
 }
 
 function buildApiUrl(path, baseOverride) {
-  const baseCandidate =
-    typeof baseOverride === "string" && baseOverride.trim() ? baseOverride.trim() : state.baseUrl;
+  const baseCandidate = typeof baseOverride === "string" && baseOverride.trim() ? baseOverride.trim() : state.baseUrl;
   const sanitizedBase = baseCandidate.replace(/\/+$/, "");
   if (!path.startsWith("/")) {
     return sanitizedBase ? `${sanitizedBase}/${path}` : path;
