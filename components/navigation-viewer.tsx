@@ -4,6 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import type { BookmarkDocument, BookmarkNode } from '@/lib/bookmarks';
 import { bookmarkDocumentToHtml, calculateBookmarkStatistics } from '@/lib/bookmarks';
+import type {
+  AiOrganizeRequestPayload,
+  AiOrganizeResponsePayload,
+  AiPlanGroup,
+  AiPlanResult,
+  AiStrategyId,
+} from '@/lib/bookmarks/ai';
+import { getStrategyDisplayName } from '@/lib/bookmarks/ai';
 
 interface NavigationViewerProps {
   document: BookmarkDocument | null;
@@ -52,8 +60,6 @@ type BookmarkCardData = {
   node: BookmarkNode & { type: 'bookmark' };
   parentFolderId: string;
 };
-
-type AiStrategyId = 'domain-groups' | 'semantic-clusters' | 'alphabetical';
 
 const AI_STRATEGIES: Array<{ id: AiStrategyId; title: string; description: string }> = [
   {
@@ -518,7 +524,7 @@ export function NavigationViewer({
   }, [bookmarkDocument]);
 
   const handleApplyAiStrategy = useCallback(
-    (strategyId: AiStrategyId) => {
+    async (strategyId: AiStrategyId) => {
       if (!editable || !bookmarkDocument || !onDocumentChange) return;
       if (bookmarkMatches.length === 0) {
         setAiError('当前书签为空，无法执行自动整理');
@@ -527,12 +533,54 @@ export function NavigationViewer({
       setIsApplyingAi(true);
       setAiError(null);
       setAiMessage(null);
+
+      const matchesForPayload = bookmarkMatches;
+      const payload: AiOrganizeRequestPayload = {
+        strategy: strategyId,
+        locale: 'zh-CN',
+        bookmarks: matchesForPayload.map((match) => {
+          const trailNames = match.trail.map((item) => item.name).filter(Boolean);
+          const parentFolderName = trailNames.length > 0 ? trailNames[trailNames.length - 1] : undefined;
+          return {
+            id: match.node.id,
+            name: cleanBookmarkTitle(match.node.name),
+            url: match.node.url ?? undefined,
+            trail: trailNames.join(' > ') || undefined,
+            domain: match.node.url ? extractHostname(match.node.url) : undefined,
+            parentFolderName,
+          };
+        }),
+      };
+
       try {
-        const newFolder = createAiOrganizedFolder(strategyId, bookmarkMatches);
-        if (!newFolder) {
-          throw new Error('未能生成新的书签分类，请稍后再试');
+        const response = await fetch('/api/bookmarks/ai-organize', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        });
+
+        const result = (await response.json().catch(() => null)) as unknown;
+
+        if (!response.ok) {
+          const errorMessage =
+            result && typeof result === 'object' && 'error' in result && typeof (result as { error?: unknown }).error === 'string'
+              ? ((result as { error?: string }).error ?? '自动整理失败，请稍后再试')
+              : '自动整理失败，请稍后再试';
+          throw new Error(errorMessage);
         }
-        const nextRootChildren = [...(bookmarkDocument.root.children ?? []), newFolder];
+
+        if (!isAiOrganizeResponsePayload(result)) {
+          throw new Error('AI 返回数据格式不正确，请稍后再试');
+        }
+
+        const nextFolder = buildFolderFromAiPlan(result.plan, strategyId, matchesForPayload);
+        if (!nextFolder) {
+          throw new Error('未能生成有效的整理结果，请稍后再试');
+        }
+
+        const nextRootChildren = [...(bookmarkDocument.root.children ?? []), nextFolder];
         const nextRoot: BookmarkNode = {
           ...bookmarkDocument.root,
           children: nextRootChildren,
@@ -542,14 +590,18 @@ export function NavigationViewer({
           root: nextRoot,
           statistics: calculateBookmarkStatistics(nextRoot),
         };
+
         onDocumentChange(nextDocument);
-        setAiMessage(`已生成「${newFolder.name}」分类，原有书签保持不变。`);
-        setSelectedFolderId(newFolder.id);
+        const successMessage =
+          result.plan.summary?.trim() ?? `已生成「${nextFolder.name}」分类，原有书签保持不变。`;
+        setAiMessage(successMessage);
+        setSelectedFolderId(nextFolder.id);
         if (searchActive) {
           setQuery('');
         }
         setIsAiPanelOpen(false);
       } catch (error) {
+        console.error('AI 自动整理失败', error);
         setAiError(error instanceof Error ? error.message : '自动整理失败，请稍后再试');
       } finally {
         setIsApplyingAi(false);
@@ -1345,162 +1397,117 @@ function renameFolderInNode(node: BookmarkNode, folderId: string, nextName: stri
   };
 }
 
-function createAiOrganizedFolder(strategyId: AiStrategyId, matches: BookmarkMatch[]): BookmarkNode | null {
-  if (matches.length === 0) {
-    return null;
+function isAiOrganizeResponsePayload(value: unknown): value is AiOrganizeResponsePayload {
+  if (!value || typeof value !== 'object') {
+    return false;
   }
-  switch (strategyId) {
-    case 'domain-groups':
-      return createDomainGroupingFolder(matches);
-    case 'semantic-clusters':
-      return createSemanticGroupingFolder(matches);
-    case 'alphabetical':
-      return createAlphabeticalFolder(matches);
-    default:
-      return null;
+  const plan = (value as { plan?: unknown }).plan;
+  if (!plan || typeof plan !== 'object') {
+    return false;
   }
+  const groups = (plan as { groups?: unknown }).groups;
+  return Array.isArray(groups);
 }
 
-function createDomainGroupingFolder(matches: BookmarkMatch[]): BookmarkNode | null {
-  const groups = new Map<string, BookmarkNode[]>();
+function buildFolderFromAiPlan(
+  plan: AiPlanResult,
+  strategyId: AiStrategyId,
+  matches: BookmarkMatch[],
+): BookmarkNode | null {
+  if (!plan || !Array.isArray(plan.groups) || plan.groups.length === 0) {
+    return null;
+  }
 
-  for (const match of matches) {
-    const url = match.node.url ?? '';
-    const host = extractHostname(url);
-    const groupName = host || '未识别站点';
-    const displayName = host
-      ? `${formatDomainDisplay(host)} · ${cleanBookmarkTitle(match.node.name)}`
-      : cleanBookmarkTitle(match.node.name);
-    const clone = cloneBookmark(match.node, displayName);
-    const bucket = groups.get(groupName);
-    if (bucket) {
-      bucket.push(clone);
-    } else {
-      groups.set(groupName, [clone]);
+  const bookmarkMap = new Map(matches.map((match) => [match.node.id, match.node]));
+  const usedIds = new Set<string>();
+  const groupNodes: BookmarkNode[] = [];
+  const fallbackGroupNames = new Set(['其他收藏', '未分组', 'Others', '其它收藏', 'Misc']);
+  let fallbackIndex: number | null = null;
+
+  for (const groupRaw of plan.groups) {
+    if (!groupRaw || typeof groupRaw !== 'object') continue;
+    const group = groupRaw as AiPlanGroup;
+    const groupName = typeof group.name === 'string' ? group.name.trim() : '';
+    if (!groupName) continue;
+
+    const bookmarksInput = Array.isArray(group.bookmarks) ? group.bookmarks : [];
+    const bookmarkNodes: BookmarkNode[] = [];
+
+    for (const bookmarkRaw of bookmarksInput) {
+      if (!bookmarkRaw || typeof bookmarkRaw !== 'object') continue;
+      const bookmarkId = typeof bookmarkRaw.id === 'string' ? bookmarkRaw.id.trim() : '';
+      if (!bookmarkId) continue;
+
+      const original = bookmarkMap.get(bookmarkId);
+      if (!original || usedIds.has(original.id)) continue;
+
+      usedIds.add(original.id);
+      const suggestedName = typeof bookmarkRaw.newName === 'string' ? bookmarkRaw.newName.trim() : '';
+      const finalName = suggestedName || cleanBookmarkTitle(original.name);
+
+      bookmarkNodes.push(cloneBookmark(original, finalName));
     }
-  }
 
-  const children = Array.from(groups.entries())
-    .sort(([a], [b]) => a.localeCompare(b, 'zh-CN'))
-    .map(([name, bookmarks]) => ({
-      type: 'folder' as const,
-      id: generateNodeId(),
-      name,
-      children: bookmarks.slice().sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')),
-    }));
+    if (bookmarkNodes.length === 0) {
+      continue;
+    }
 
-  if (children.length === 0) {
-    return null;
-  }
-
-  return {
-    type: 'folder',
-    id: generateNodeId(),
-    name: `AI 整理 · 域名分组（${formatFolderTimestamp(new Date())}）`,
-    children,
-  };
-}
-
-const SEMANTIC_KEYWORDS: Array<{ name: string; keywords: string[] }> = [
-  { name: '社交 & 社区', keywords: ['social', 'twitter', 'weibo', 'wechat', 'discord', 'reddit', 'facebook', 'instagram', 'douban'] },
-  { name: '效率 & 办公', keywords: ['notion', 'slack', 'trello', 'asana', 'todo', 'calendar', 'office', 'productivity', 'mail'] },
-  { name: '开发 & 技术', keywords: ['github', 'gitlab', 'stack', 'dev', 'docs', 'api', 'npm', 'vercel', 'cloud', 'developer'] },
-  { name: '资讯 & 阅读', keywords: ['news', 'medium', 'zhihu', 'infoq', '36kr', 'nytimes', 'guardian', 'newsletter', 'blog'] },
-  { name: '影音 & 娱乐', keywords: ['video', 'music', 'youtube', 'bilibili', 'spotify', 'movie', 'podcast', 'entertainment'] },
-];
-
-function createSemanticGroupingFolder(matches: BookmarkMatch[]): BookmarkNode | null {
-  const buckets = new Map<string, BookmarkNode[]>();
-  for (const category of SEMANTIC_KEYWORDS) {
-    buckets.set(category.name, []);
-  }
-  buckets.set('其他收藏', []);
-
-  for (const match of matches) {
-    const text = `${match.lowerCaseName} ${match.lowerCaseUrl}`;
-    const category =
-      SEMANTIC_KEYWORDS.find((item) => item.keywords.some((keyword) => text.includes(keyword))) ?? null;
-    const categoryName = category?.name ?? '其他收藏';
-    const renamed = `${categoryName} ｜ ${cleanBookmarkTitle(match.node.name)}`;
-    const clone = cloneBookmark(match.node, renamed);
-    buckets.get(categoryName)?.push(clone);
-  }
-
-  const children = SEMANTIC_KEYWORDS.map((category) => {
-    const items = buckets.get(category.name) ?? [];
-    if (items.length === 0) return null;
-    return {
-      type: 'folder' as const,
-      id: generateNodeId(),
-      name: category.name,
-      children: items.slice().sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')) as BookmarkNode[],
-    };
-  }).filter((item): item is BookmarkNode & { type: 'folder'; children: BookmarkNode[] } => Boolean(item));
-
-  const remaining = buckets.get('其他收藏') ?? [];
-  if (remaining.length > 0) {
-    children.push({
+    const sortedChildren = bookmarkNodes.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+    groupNodes.push({
       type: 'folder',
       id: generateNodeId(),
-      name: '其他收藏',
-      children: remaining.slice().sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')),
+      name: groupName,
+      children: sortedChildren,
     });
+
+    if (fallbackIndex === null && fallbackGroupNames.has(groupName)) {
+      fallbackIndex = groupNodes.length - 1;
+    }
   }
 
-  if (children.length === 0) {
+  if (groupNodes.length === 0) {
     return null;
   }
+
+  const eligibleMatches = matches.filter((match) => bookmarkMap.has(match.node.id));
+  if (usedIds.size < eligibleMatches.length) {
+    const leftoverNodes: BookmarkNode[] = [];
+    for (const match of eligibleMatches) {
+      if (usedIds.has(match.node.id)) continue;
+      usedIds.add(match.node.id);
+      leftoverNodes.push(cloneBookmark(match.node, cleanBookmarkTitle(match.node.name)));
+    }
+    if (leftoverNodes.length > 0) {
+      const sortedLeftovers = leftoverNodes.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+      if (fallbackIndex !== null) {
+        const existing = groupNodes[fallbackIndex];
+        groupNodes[fallbackIndex] = {
+          ...existing,
+          children: [...(existing.children ?? []), ...sortedLeftovers].sort((a, b) =>
+            a.name.localeCompare(b.name, 'zh-CN'),
+          ),
+        };
+      } else {
+        groupNodes.push({
+          type: 'folder',
+          id: generateNodeId(),
+          name: '其他收藏',
+          children: sortedLeftovers,
+        });
+      }
+    }
+  }
+
+  const folderTitle =
+    typeof plan.folderTitle === 'string' && plan.folderTitle.trim()
+      ? plan.folderTitle.trim()
+      : `AI 整理 · ${getStrategyDisplayName(strategyId)}（${formatFolderTimestamp(new Date())}）`;
 
   return {
     type: 'folder',
     id: generateNodeId(),
-    name: `AI 整理 · 语义主题（${formatFolderTimestamp(new Date())}）`,
-    children,
-  };
-}
-
-const ALPHABETICAL_ORDER = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split(''), '0-9', '其他'];
-
-function createAlphabeticalFolder(matches: BookmarkMatch[]): BookmarkNode | null {
-  const groups = new Map<string, BookmarkNode[]>();
-
-  for (const match of matches) {
-    const title = cleanBookmarkTitle(match.node.name);
-    const initial = title.charAt(0).toUpperCase();
-    let bucketKey: string;
-    if (/[A-Z]/.test(initial)) {
-      bucketKey = initial;
-    } else if (/[0-9]/.test(initial)) {
-      bucketKey = '0-9';
-    } else {
-      bucketKey = '其他';
-    }
-    const renamed = `${bucketKey} · ${title}`;
-    const clone = cloneBookmark(match.node, renamed);
-    const bucket = groups.get(bucketKey);
-    if (bucket) {
-      bucket.push(clone);
-    } else {
-      groups.set(bucketKey, [clone]);
-    }
-  }
-
-  const children = ALPHABETICAL_ORDER.filter((key) => groups.has(key)).map((key) => ({
-    type: 'folder' as const,
-    id: generateNodeId(),
-    name: key,
-    children: (groups.get(key) ?? []).slice().sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')),
-  }));
-
-  if (children.length === 0) {
-    return null;
-  }
-
-  return {
-    type: 'folder',
-    id: generateNodeId(),
-    name: `AI 整理 · 字母索引（${formatFolderTimestamp(new Date())}）`,
-    children,
+    name: folderTitle,
+    children: groupNodes,
   };
 }
 
@@ -1518,13 +1525,6 @@ function cleanBookmarkTitle(name: string | undefined): string {
     return '未命名网页';
   }
   return trimmed.replace(/\s+/g, ' ');
-}
-
-function formatDomainDisplay(host: string): string {
-  if (!host) return '未识别站点';
-  const parts = host.split('.');
-  if (parts.length <= 2) return host;
-  return `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
 }
 
 function formatFolderTimestamp(date: Date): string {

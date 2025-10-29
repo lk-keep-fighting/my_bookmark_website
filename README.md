@@ -29,10 +29,12 @@
    NEXT_PUBLIC_SUPABASE_URL=https://<your-project>.supabase.co
    NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon-key>
    SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
+   ZHIPU_API_KEY=<glm-4-5-air-api-key>
    ```
 
    - `NEXT_PUBLIC_SUPABASE_URL` 与 `NEXT_PUBLIC_SUPABASE_ANON_KEY` 会在浏览器端使用。
    - `SUPABASE_SERVICE_ROLE_KEY` 仅在服务端 API 中使用，用于写入/读取受 RLS 保护的数据。
+   - `ZHIPU_API_KEY` 为智谱开放平台 API Key，用于在服务端请求 `glm-4.5-air` 模型。
 
 3. 初始化数据库表（SQL 示例）
    ```sql
