@@ -335,6 +335,38 @@ export function NavigationViewer({
     return () => window.clearTimeout(timer);
   }, [aiError]);
 
+  const applyPlanToDocument = useCallback(
+    (plan: AiPlanResult, strategyId: AiStrategyId, matches: BookmarkMatch[]) => {
+      if (!editable || !bookmarkDocument || !onDocumentChange) {
+        return null;
+      }
+      const nextFolder = buildFolderFromAiPlan(plan, strategyId, matches);
+      if (!nextFolder) {
+        return null;
+      }
+
+      const nextRootChildren = [...(bookmarkDocument.root.children ?? []), nextFolder];
+      const nextRoot: BookmarkNode = {
+        ...bookmarkDocument.root,
+        children: nextRootChildren,
+      };
+      const nextDocument: BookmarkDocument = {
+        ...bookmarkDocument,
+        root: nextRoot,
+        statistics: calculateBookmarkStatistics(nextRoot),
+      };
+
+      onDocumentChange?.(nextDocument);
+      setSelectedFolderId(nextFolder.id);
+      if (searchActive) {
+        setQuery('');
+      }
+      setIsAiPanelOpen(false);
+      return nextFolder;
+    },
+    [editable, bookmarkDocument, onDocumentChange, searchActive],
+  );
+
   useEffect(() => {
     if (!activeAiJob) {
       return;
@@ -630,38 +662,6 @@ export function NavigationViewer({
       console.error('导出书签失败', error);
     }
   }, [bookmarkDocument]);
-
-  const applyPlanToDocument = useCallback(
-    (plan: AiPlanResult, strategyId: AiStrategyId, matches: BookmarkMatch[]) => {
-      if (!editable || !bookmarkDocument || !onDocumentChange) {
-        return null;
-      }
-      const nextFolder = buildFolderFromAiPlan(plan, strategyId, matches);
-      if (!nextFolder) {
-        return null;
-      }
-
-      const nextRootChildren = [...(bookmarkDocument.root.children ?? []), nextFolder];
-      const nextRoot: BookmarkNode = {
-        ...bookmarkDocument.root,
-        children: nextRootChildren,
-      };
-      const nextDocument: BookmarkDocument = {
-        ...bookmarkDocument,
-        root: nextRoot,
-        statistics: calculateBookmarkStatistics(nextRoot),
-      };
-
-      onDocumentChange?.(nextDocument);
-      setSelectedFolderId(nextFolder.id);
-      if (searchActive) {
-        setQuery('');
-      }
-      setIsAiPanelOpen(false);
-      return nextFolder;
-    },
-    [editable, bookmarkDocument, onDocumentChange, searchActive, setSelectedFolderId, setQuery, setIsAiPanelOpen],
-  );
 
   const handleApplyAiStrategy = useCallback(
     async (strategyId: AiStrategyId) => {
