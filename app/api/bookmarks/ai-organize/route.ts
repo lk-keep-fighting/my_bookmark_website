@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
+import { jsonrepair } from "jsonrepair";
 import type {
   AiOrganizeRequestPayload,
+  AiOrganizeResponsePayload,
   AiPlanBookmark,
   AiPlanGroup,
   AiPlanResult,
@@ -11,8 +13,13 @@ import { getStrategyDisplayName } from "@/lib/bookmarks/ai";
 const API_ENDPOINT = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
 const MODEL_NAME = "glm-4.5-air";
 const MAX_GROUPS = 12;
+const MAX_AI_ATTEMPTS = 2;
+const REQUEST_TIMEOUT_MS = 90_000;
+const MAX_OUTPUT_TOKENS = 4_000;
+const DEFAULT_FIELD_LIMIT = 120;
+const RETRY_SYSTEM_SUFFIX = `- 特别提醒：上一轮输出的 JSON 未能成功解析，本次必须严格遵守上述格式，仅返回合法 JSON。\n- 如非必要，请省略与原名称相同的 newName 字段，以控制输出长度。\n`;
 
-const BASE_SYSTEM_PROMPT = `你是一名资深信息架构专家，负责根据用户提供的书签列表生成便于浏览的分类方案。\n\n请牢记以下规则：\n- 只能返回 JSON 文本，不允许输出额外的说明、前缀或代码块标记。\n- JSON 必须严格符合以下 TypeScript 类型定义：\n  type OrganizedFolderPlan = {\n    folderTitle?: string;\n    summary?: string;\n    groups: Array<{\n      name: string;\n      bookmarks: Array<{\n        id: string;\n        newName?: string;\n      }>;\n    }>;\n  };\n- groups 数量不要超过 12 个，每个 group 至少包含 1 个书签。\n- 不要虚构书签 ID，也不要遗漏输入中已经列出的书签。\n- 可选的 newName 字段用于提供更清晰或规范的名称，若无需修改可以省略。\n- 若某些书签不属于主要分组，可放入名为“其他收藏”的分组中。\n`;
+const BASE_SYSTEM_PROMPT = `你是一名资深信息架构专家，负责根据用户提供的书签列表生成便于浏览的分类方案。\n\n请牢记以下规则：\n- 只能返回 JSON 文本，不允许输出额外的说明、前缀或代码块标记。\n- JSON 必须严格符合以下 TypeScript 类型定义：\n  type OrganizedFolderPlan = {\n    folderTitle?: string;\n    summary?: string;\n    groups: Array<{\n      name: string;\n      bookmarks: Array<{\n        id: string;\n        newName?: string;\n      }>;\n    }>;\n  };\n- groups 数量不要超过 12 个，每个 group 至少包含 1 个书签。\n- 不要虚构书签 ID，也不要遗漏输入中已经列出的书签。\n- 可选的 newName 字段用于提供更清晰或规范的名称，若无需修改可以省略。\n- 输出请尽量紧凑，避免冗余空格和换行，以减少字符长度。\n- 若某些书签不属于主要分组，可放入名为“其他收藏”的分组中。\n`;
 
 const STRATEGY_INSTRUCTIONS: Record<AiStrategyId, string> = {
   "domain-groups": `策略：域名智能分组。\n- 优先按照书签所属站点或域名进行聚合，同一域名的书签应归在同一 group。\n- group 名称建议包含域名及一句简洁的中文说明，例如“github.com · 开源社区”。\n- 对于数量较少或无法识别域名的书签，可以统一放入“其他收藏”。\n`,
@@ -28,6 +35,28 @@ type SanitizedBookmark = {
   trail?: string;
   parentFolderName?: string;
 };
+
+type ChatMessage = {
+  role: "system" | "user";
+  content: string;
+};
+
+type DigestFormattingOptions = {
+  includeUrl: boolean;
+  includeTrail: boolean;
+  includeParentFolder: boolean;
+  maxFieldLength: number;
+};
+
+class AiRequestError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+    this.name = "AiRequestError";
+  }
+}
 
 export async function POST(request: Request) {
   const apiKey = process.env.ZHIPU_API_KEY;
@@ -57,54 +86,230 @@ export async function POST(request: Request) {
   }
 
   const strategyLabel = getStrategyDisplayName(strategy);
-  const digest = sanitizedBookmarks.map(formatBookmarkDigest).join("\n");
   const locale = typeof payload?.locale === "string" && payload.locale.trim() ? payload.locale.trim() : "zh-CN";
 
-  const userPrompt = [
-    `请依据“${strategyLabel}”策略整理以下 ${sanitizedBookmarks.length} 条书签。`,
-    "务必将每个书签放入某个分组，可使用新名称提升可读性。",
-    `输出语言保持 ${locale}，仅返回 JSON。`,
-    "书签列表：",
-    digest,
-  ].join("\n\n");
-
   try {
-    const response = await fetch(API_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: MODEL_NAME,
-        temperature: 0.4,
-        stream: false,
-        messages: [
-          { role: "system", content: `${BASE_SYSTEM_PROMPT}${STRATEGY_INSTRUCTIONS[strategy] ?? ""}` },
-          { role: "user", content: userPrompt },
-        ],
-      }),
+    const result = await generateAiPlan({
+      apiKey,
+      strategy,
+      strategyLabel,
+      locale,
+      bookmarks: sanitizedBookmarks,
     });
 
-    const payloadJson = await safeReadJson(response);
-    if (!response.ok) {
-      const reason = payloadJson && typeof payloadJson === "object" && "error" in payloadJson ? (payloadJson as { error?: string }).error : undefined;
-      return NextResponse.json(
-        { error: reason ?? `AI 接口请求失败（${response.status}）` },
-        { status: response.status >= 400 ? response.status : 500 },
-      );
-    }
-
-    const rawContent = extractCompletionContent(payloadJson);
-    const plan = normalizePlan(rawContent);
-
-    const usage = getUsageSummary(payloadJson);
-
-    return NextResponse.json({ plan, rawContent, usage });
+    return NextResponse.json(result);
   } catch (error) {
+    const status = error instanceof AiRequestError ? error.status : 502;
     const message = error instanceof Error ? error.message : "调用 AI 接口失败";
-    return NextResponse.json({ error: message }, { status: 502 });
+    return NextResponse.json({ error: message }, { status });
   }
+}
+
+async function generateAiPlan({
+  apiKey,
+  strategy,
+  strategyLabel,
+  locale,
+  bookmarks,
+}: {
+  apiKey: string;
+  strategy: AiStrategyId;
+  strategyLabel: string;
+  locale: string;
+  bookmarks: SanitizedBookmark[];
+}): Promise<AiOrganizeResponsePayload> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt < MAX_AI_ATTEMPTS; attempt += 1) {
+    const digestOptions = getDigestOptions(bookmarks.length, attempt > 0);
+    const digest = bookmarks.map((bookmark, index) => formatBookmarkDigest(bookmark, index, digestOptions)).join("\n");
+    const userPrompt = buildUserPrompt({
+      strategyLabel,
+      locale,
+      count: bookmarks.length,
+      digest,
+      digestOptions,
+      attempt,
+    });
+    const messages = buildMessages(strategy, userPrompt, attempt);
+
+    try {
+      const { rawContent, usage } = await requestAiCompletion({ apiKey, messages });
+      const plan = normalizePlan(rawContent);
+      return { plan, rawContent, usage };
+    } catch (error) {
+      if (error instanceof AiRequestError) {
+        throw error;
+      }
+
+      if (isRetryableAiError(error) && attempt < MAX_AI_ATTEMPTS - 1) {
+        lastError = error instanceof Error ? error : null;
+        continue;
+      }
+
+      const message = error instanceof Error ? error.message : "AI 返回结果解析失败";
+      throw new AiRequestError(message, 502);
+    }
+  }
+
+  const fallbackMessage = lastError?.message ?? "AI 未返回有效的整理方案";
+  throw new AiRequestError(fallbackMessage, 502);
+}
+
+async function requestAiCompletion({
+  apiKey,
+  messages,
+}: {
+  apiKey: string;
+  messages: ChatMessage[];
+}): Promise<{ rawContent: string; usage?: AiOrganizeResponsePayload["usage"] }> {
+  const timeoutSignal =
+    typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
+      ? AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+      : undefined;
+
+  const response = await fetch(API_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: MODEL_NAME,
+      temperature: 0.3,
+      stream: false,
+      max_tokens: MAX_OUTPUT_TOKENS,
+      messages,
+    }),
+    signal: timeoutSignal,
+  });
+
+  const payloadJson = await safeReadJson(response);
+  if (!response.ok) {
+    const reason =
+      payloadJson && typeof payloadJson === "object" && "error" in payloadJson
+        ? (payloadJson as { error?: string }).error
+        : undefined;
+    const status = response.status >= 400 ? response.status : 500;
+    throw new AiRequestError(reason ?? `AI 接口请求失败（${response.status}）`, status);
+  }
+
+  const rawContent = extractCompletionContent(payloadJson);
+  const usage = getUsageSummary(payloadJson);
+
+  return { rawContent, usage };
+}
+
+function buildMessages(strategy: AiStrategyId, userPrompt: string, attempt: number): ChatMessage[] {
+  const strategyInstruction = STRATEGY_INSTRUCTIONS[strategy] ?? "";
+  const systemPrompt =
+    attempt > 0
+      ? `${BASE_SYSTEM_PROMPT}${strategyInstruction}${RETRY_SYSTEM_SUFFIX}`
+      : `${BASE_SYSTEM_PROMPT}${strategyInstruction}`;
+
+  return [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userPrompt },
+  ];
+}
+
+function buildUserPrompt({
+  strategyLabel,
+  locale,
+  count,
+  digest,
+  digestOptions,
+  attempt,
+}: {
+  strategyLabel: string;
+  locale: string;
+  count: number;
+  digest: string;
+  digestOptions: DigestFormattingOptions;
+  attempt: number;
+}): string {
+  const fieldsDescription = describeDigestOptions(digestOptions);
+  const attemptWarning =
+    attempt > 0
+      ? "⚠️ 上一次的 JSON 无法解析，请严格按照上述类型重新输出合法 JSON，仅保留必要字段，newName 仅在确有需要时提供。"
+      : null;
+
+  const sections = [
+    `请依据“${strategyLabel}”策略整理以下 ${count} 条书签。`,
+    "务必将每个书签放入某个分组，可在必要时提供 newName 以提升可读性。",
+    `输出语言保持 ${locale}，仅返回 JSON。`,
+    attemptWarning,
+    `书签列表（${fieldsDescription}）：`,
+    digest,
+  ].filter(Boolean);
+
+  return sections.join("\n\n");
+}
+
+function getDigestOptions(count: number, isRetry: boolean): DigestFormattingOptions {
+  if (isRetry) {
+    if (count <= 120) {
+      return { includeUrl: true, includeTrail: false, includeParentFolder: false, maxFieldLength: 100 };
+    }
+    return { includeUrl: false, includeTrail: false, includeParentFolder: false, maxFieldLength: 80 };
+  }
+  if (count <= 80) {
+    return { includeUrl: true, includeTrail: true, includeParentFolder: true, maxFieldLength: DEFAULT_FIELD_LIMIT };
+  }
+  if (count <= 160) {
+    return { includeUrl: true, includeTrail: false, includeParentFolder: true, maxFieldLength: 110 };
+  }
+  if (count <= 220) {
+    return { includeUrl: true, includeTrail: false, includeParentFolder: false, maxFieldLength: 100 };
+  }
+  return { includeUrl: false, includeTrail: false, includeParentFolder: false, maxFieldLength: 80 };
+}
+
+function describeDigestOptions(options: DigestFormattingOptions): string {
+  const fields = ["ID", "名称", "域名"];
+  if (options.includeUrl) {
+    fields.push("链接");
+  }
+  if (options.includeParentFolder) {
+    fields.push("上级目录");
+  }
+  if (options.includeTrail) {
+    fields.push("路径");
+  }
+  return `包含字段：${fields.join("、")}`;
+}
+
+function truncateDigestField(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  if (maxLength <= 8) {
+    return `${value.slice(0, maxLength - 1)}…`;
+  }
+  const head = Math.floor((maxLength - 1) / 2);
+  const tail = maxLength - 1 - head;
+  return `${value.slice(0, head)}…${value.slice(value.length - tail)}`;
+}
+
+function formatUrlForDigest(url: string, maxLength: number): string {
+  const withoutProtocol = url.replace(/^https?:\/\//i, "").replace(/\/$/, "");
+  const [pathWithoutQuery] = withoutProtocol.split("?");
+  const normalized = pathWithoutQuery || withoutProtocol;
+  return truncateDigestField(normalized, maxLength);
+}
+
+function isRetryableAiError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message ?? "";
+  return (
+    message.includes("JSON") ||
+    message.includes("结构不正确") ||
+    message.includes("分组结果") ||
+    message.includes("返回内容为空") ||
+    message.includes("返回数据格式不正确")
+  );
 }
 
 function isValidStrategy(value: unknown): value is AiStrategyId {
@@ -140,19 +345,26 @@ function sanitizeBookmark(bookmark: RawBookmark | undefined): SanitizedBookmark 
   };
 }
 
-function formatBookmarkDigest(bookmark: SanitizedBookmark, index: number): string {
-  const parts = [`${index + 1}. [${bookmark.id}] 名称: ${bookmark.name}`];
+function formatBookmarkDigest(
+  bookmark: SanitizedBookmark,
+  index: number,
+  options: DigestFormattingOptions,
+): string {
+  const parts = [
+    `${index + 1}. id=${bookmark.id}`,
+    `name=${truncateDigestField(bookmark.name, options.maxFieldLength)}`,
+  ];
   if (bookmark.domain) {
-    parts.push(`域名: ${bookmark.domain}`);
+    parts.push(`domain=${truncateDigestField(bookmark.domain, options.maxFieldLength)}`);
   }
-  if (bookmark.url) {
-    parts.push(`链接: ${bookmark.url}`);
+  if (options.includeUrl && bookmark.url) {
+    parts.push(`url=${formatUrlForDigest(bookmark.url, options.maxFieldLength)}`);
   }
-  if (bookmark.parentFolderName) {
-    parts.push(`上级目录: ${bookmark.parentFolderName}`);
+  if (options.includeParentFolder && bookmark.parentFolderName) {
+    parts.push(`folder=${truncateDigestField(bookmark.parentFolderName, options.maxFieldLength)}`);
   }
-  if (bookmark.trail) {
-    parts.push(`路径: ${bookmark.trail}`);
+  if (options.includeTrail && bookmark.trail) {
+    parts.push(`trail=${truncateDigestField(bookmark.trail, options.maxFieldLength)}`);
   }
   return parts.join("；");
 }
@@ -182,8 +394,16 @@ function normalizePlan(content: string): AiPlanResult {
   let raw: unknown;
   try {
     raw = JSON.parse(jsonText) as AiPlanResult;
-  } catch (error) {
-    throw new Error("AI 返回内容不是合法的 JSON");
+  } catch {
+    const repaired = tryRepairJson(jsonText);
+    if (!repaired) {
+      throw new Error("AI 返回内容不是合法的 JSON");
+    }
+    try {
+      raw = JSON.parse(repaired) as AiPlanResult;
+    } catch {
+      throw new Error("AI 返回内容不是合法的 JSON");
+    }
   }
 
   if (!raw || typeof raw !== "object") {
@@ -267,10 +487,33 @@ function extractJsonText(content: string): string {
 
 function tryParseJson(text: string | undefined): string | null {
   if (!text) return null;
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (isJsonParsable(trimmed)) {
+    return trimmed;
+  }
+  const repaired = tryRepairJson(trimmed);
+  if (repaired && isJsonParsable(repaired)) {
+    return repaired;
+  }
+  return null;
+}
+
+function isJsonParsable(candidate: string): boolean {
   try {
-    JSON.parse(text);
-    return text;
-  } catch (error) {
+    JSON.parse(candidate);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function tryRepairJson(text: string): string | null {
+  try {
+    return jsonrepair(text);
+  } catch {
     return null;
   }
 }
