@@ -196,22 +196,24 @@ function normalizePlan(content: string): AiPlanResult {
 
   for (const group of groupsInput) {
     if (!group || typeof group !== "object") continue;
-    const name = typeof (group as { name?: unknown }).name === "string" ? (group as { name?: string }).name.trim() : "";
+    const rawName = (group as { name?: unknown }).name;
+    const name = typeof rawName === "string" ? rawName.trim() : "";
     if (!name) continue;
 
-    const bookmarksInput = Array.isArray((group as { bookmarks?: unknown }).bookmarks)
-      ? ((group as { bookmarks?: AiPlanBookmark[] }).bookmarks ?? [])
-      : [];
+    const rawBookmarks = (group as { bookmarks?: unknown }).bookmarks;
+    const bookmarksInput = Array.isArray(rawBookmarks) ? (rawBookmarks as AiPlanBookmark[]) : [];
 
     const bookmarks: AiPlanBookmark[] = [];
     const seen = new Set<string>();
 
     for (const bookmark of bookmarksInput) {
       if (!bookmark || typeof bookmark !== "object") continue;
-      const id = typeof (bookmark as { id?: unknown }).id === "string" ? (bookmark as { id?: string }).id.trim() : "";
+      const rawId = (bookmark as { id?: unknown }).id;
+      const id = typeof rawId === "string" ? rawId.trim() : "";
       if (!id || seen.has(id)) continue;
       seen.add(id);
-      const newName = typeof (bookmark as { newName?: unknown }).newName === "string" ? (bookmark as { newName?: string }).newName.trim() : undefined;
+      const rawNewName = (bookmark as { newName?: unknown }).newName;
+      const newName = typeof rawNewName === "string" ? rawNewName.trim() : undefined;
       bookmarks.push(newName ? { id, newName } : { id });
     }
 
