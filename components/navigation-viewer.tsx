@@ -5,8 +5,8 @@ import type React from 'react';
 import type { BookmarkDocument, BookmarkNode } from '@/lib/bookmarks';
 import { bookmarkDocumentToHtml, calculateBookmarkStatistics } from '@/lib/bookmarks';
 import type {
+  AiOrganizeJobSnapshot,
   AiOrganizeRequestPayload,
-  AiOrganizeResponsePayload,
   AiPlanGroup,
   AiPlanResult,
   AiStrategyId,
@@ -78,6 +78,14 @@ const AI_STRATEGIES: Array<{ id: AiStrategyId; title: string; description: strin
     description: '以名称首字母生成快速导航目录',
   },
 ];
+
+const AI_JOB_STATUS_LABELS: Record<AiOrganizeJobSnapshot['status'], string> = {
+  pending: '等待执行',
+  running: '执行中',
+  succeeded: '已完成',
+  failed: '失败',
+  cancelled: '已停止',
+};
 
 const EMPTY_INDEX: NavigationIndex = {
   folderEntries: [],
@@ -153,9 +161,18 @@ export function NavigationViewer({
   const [isApplyingAi, setIsApplyingAi] = useState(false);
   const [aiMessage, setAiMessage] = useState<string | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [activeAiJob, setActiveAiJob] = useState<AiOrganizeJobSnapshot | null>(null);
+  const [aiJobMatches, setAiJobMatches] = useState<BookmarkMatch[] | null>(null);
+  const [isCheckingAiJob, setIsCheckingAiJob] = useState(false);
+  const appliedAiJobIdRef = useRef<string | null>(null);
   const [collapsedFolderIds, setCollapsedFolderIds] = useState<Set<string>>(() => new Set());
   const previousRootIdRef = useRef<string | null>(null);
   const folderRenameInputRef = useRef<HTMLInputElement | null>(null);
+
+  const jobInProgress = Boolean(
+    activeAiJob && (activeAiJob.status === 'pending' || activeAiJob.status === 'running'),
+  );
+  const isAiBusy = isApplyingAi || isCheckingAiJob || jobInProgress;
 
   const trimmedQuery = query.trim();
   const normalizedQuery = trimmedQuery.toLowerCase();
@@ -284,6 +301,85 @@ export function NavigationViewer({
     const timer = window.setTimeout(() => setAiError(null), 6000);
     return () => window.clearTimeout(timer);
   }, [aiError]);
+
+  useEffect(() => {
+    if (!activeAiJob) {
+      return;
+    }
+
+    if (activeAiJob.status === 'succeeded' && activeAiJob.result) {
+      if (!editable || !bookmarkDocument || !onDocumentChange) {
+        return;
+      }
+      if (appliedAiJobIdRef.current === activeAiJob.id) {
+        return;
+      }
+      if (!aiJobMatches || aiJobMatches.length === 0) {
+        setAiError('未找到原始书签上下文，无法应用本次整理结果。');
+        appliedAiJobIdRef.current = activeAiJob.id;
+        setActiveAiJob(null);
+        setAiJobMatches(null);
+        return;
+      }
+
+      const nextFolder = buildFolderFromAiPlan(activeAiJob.result.plan, activeAiJob.strategy, aiJobMatches);
+      if (!nextFolder) {
+        setAiError('未能生成有效的整理结果，请稍后再试');
+        appliedAiJobIdRef.current = activeAiJob.id;
+        setActiveAiJob(null);
+        setAiJobMatches(null);
+        return;
+      }
+
+      const nextRootChildren = [...(bookmarkDocument.root.children ?? []), nextFolder];
+      const nextRoot: BookmarkNode = {
+        ...bookmarkDocument.root,
+        children: nextRootChildren,
+      };
+      const nextDocument: BookmarkDocument = {
+        ...bookmarkDocument,
+        root: nextRoot,
+        statistics: calculateBookmarkStatistics(nextRoot),
+      };
+
+      onDocumentChange?.(nextDocument);
+      const successMessage =
+        activeAiJob.result.plan.summary?.trim() ?? `已生成「${nextFolder.name}」分类，原有书签保持不变。`;
+      setAiMessage(successMessage);
+      setSelectedFolderId(nextFolder.id);
+      if (searchActive) {
+        setQuery('');
+      }
+      appliedAiJobIdRef.current = activeAiJob.id;
+      setActiveAiJob(null);
+      setAiJobMatches(null);
+      setIsAiPanelOpen(false);
+      return;
+    }
+
+    if (appliedAiJobIdRef.current === activeAiJob.id) {
+      return;
+    }
+
+    if (activeAiJob.status === 'failed') {
+      if (activeAiJob.error) {
+        setAiError(activeAiJob.error);
+      } else {
+        setAiError('AI 整理任务执行失败，请稍后再试');
+      }
+      appliedAiJobIdRef.current = activeAiJob.id;
+      setActiveAiJob(null);
+      setAiJobMatches(null);
+      return;
+    }
+
+    if (activeAiJob.status === 'cancelled') {
+      setAiMessage('AI 整理任务已停止');
+      appliedAiJobIdRef.current = activeAiJob.id;
+      setActiveAiJob(null);
+      setAiJobMatches(null);
+    }
+  }, [activeAiJob, aiJobMatches, bookmarkDocument, editable, onDocumentChange, searchActive]);
 
   const activeFolderId = useMemo(() => {
     if (!bookmarkDocument) {
@@ -525,7 +621,13 @@ export function NavigationViewer({
 
   const handleApplyAiStrategy = useCallback(
     async (strategyId: AiStrategyId) => {
-      if (!editable || !bookmarkDocument || !onDocumentChange) return;
+      if (!editable || !bookmarkDocument) {
+        return;
+      }
+      if (jobInProgress) {
+        setAiError('已有 AI 整理任务正在执行，请先刷新或停止当前任务。');
+        return;
+      }
       if (bookmarkMatches.length === 0) {
         setAiError('当前书签为空，无法执行自动整理');
         return;
@@ -534,7 +636,7 @@ export function NavigationViewer({
       setAiError(null);
       setAiMessage(null);
 
-      const matchesForPayload = bookmarkMatches;
+      const matchesForPayload = bookmarkMatches.slice();
       const payload: AiOrganizeRequestPayload = {
         strategy: strategyId,
         locale: 'zh-CN',
@@ -566,49 +668,122 @@ export function NavigationViewer({
         if (!response.ok) {
           const errorMessage =
             result && typeof result === 'object' && 'error' in result && typeof (result as { error?: unknown }).error === 'string'
-              ? ((result as { error?: string }).error ?? '自动整理失败，请稍后再试')
-              : '自动整理失败，请稍后再试';
+              ? ((result as { error?: string }).error ?? '自动整理任务发起失败，请稍后再试')
+              : '自动整理任务发起失败，请稍后再试';
           throw new Error(errorMessage);
         }
 
-        if (!isAiOrganizeResponsePayload(result)) {
-          throw new Error('AI 返回数据格式不正确，请稍后再试');
+        const job = result && typeof result === 'object' && 'job' in result ? (result as { job?: unknown }).job : null;
+        if (!isAiOrganizeJobSnapshot(job)) {
+          throw new Error('AI 任务响应格式不正确，请稍后再试');
         }
 
-        const nextFolder = buildFolderFromAiPlan(result.plan, strategyId, matchesForPayload);
-        if (!nextFolder) {
-          throw new Error('未能生成有效的整理结果，请稍后再试');
-        }
+        setActiveAiJob(job);
+        setAiJobMatches(matchesForPayload);
+        appliedAiJobIdRef.current = null;
 
-        const nextRootChildren = [...(bookmarkDocument.root.children ?? []), nextFolder];
-        const nextRoot: BookmarkNode = {
-          ...bookmarkDocument.root,
-          children: nextRootChildren,
-        };
-        const nextDocument: BookmarkDocument = {
-          ...bookmarkDocument,
-          root: nextRoot,
-          statistics: calculateBookmarkStatistics(nextRoot),
-        };
-
-        onDocumentChange(nextDocument);
         const successMessage =
-          result.plan.summary?.trim() ?? `已生成「${nextFolder.name}」分类，原有书签保持不变。`;
+          (result && typeof result === 'object' && 'message' in result && typeof (result as { message?: unknown }).message === 'string'
+            ? (result as { message?: string }).message
+            : null) ?? 'AI 整理任务已在后台创建，请稍后刷新任务状态。';
+
         setAiMessage(successMessage);
-        setSelectedFolderId(nextFolder.id);
-        if (searchActive) {
-          setQuery('');
-        }
-        setIsAiPanelOpen(false);
       } catch (error) {
-        console.error('AI 自动整理失败', error);
-        setAiError(error instanceof Error ? error.message : '自动整理失败，请稍后再试');
+        console.error('AI 自动整理任务创建失败', error);
+        setAiError(error instanceof Error ? error.message : '自动整理任务创建失败，请稍后再试');
       } finally {
         setIsApplyingAi(false);
       }
     },
-    [editable, bookmarkDocument, onDocumentChange, bookmarkMatches, searchActive],
+    [editable, bookmarkDocument, bookmarkMatches, jobInProgress],
   );
+
+  const handleRefreshAiJob = useCallback(async () => {
+    if (!activeAiJob) {
+      setAiError('当前没有正在执行的 AI 任务');
+      return;
+    }
+    setIsCheckingAiJob(true);
+    setAiError(null);
+    try {
+      const response = await fetch(`/api/bookmarks/ai-organize/${activeAiJob.id}`);
+      const result = (await response.json().catch(() => null)) as unknown;
+
+      if (!response.ok) {
+        const errorMessage =
+          result && typeof result === 'object' && 'error' in result && typeof (result as { error?: unknown }).error === 'string'
+            ? ((result as { error?: string }).error ?? '刷新任务状态失败，请稍后重试')
+            : '刷新任务状态失败，请稍后重试';
+        throw new Error(errorMessage);
+      }
+
+      const job = result && typeof result === 'object' && 'job' in result ? (result as { job?: unknown }).job : null;
+      if (!isAiOrganizeJobSnapshot(job)) {
+        throw new Error('AI 任务状态响应异常，请稍后再试');
+      }
+
+      setActiveAiJob(job);
+      if (result && typeof result === 'object' && 'message' in result && typeof (result as { message?: unknown }).message === 'string') {
+        const nextMessage = (result as { message?: string }).message;
+        if (nextMessage) {
+          setAiMessage(nextMessage);
+        }
+      }
+      if (job.status === 'failed' && job.error) {
+        setAiError(job.error);
+      }
+    } catch (error) {
+      console.error('刷新 AI 任务状态失败', error);
+      setAiError(error instanceof Error ? error.message : '刷新任务状态失败，请稍后重试');
+    } finally {
+      setIsCheckingAiJob(false);
+    }
+  }, [activeAiJob]);
+
+  const handleCancelAiJob = useCallback(async () => {
+    if (!activeAiJob) {
+      setAiError('当前没有正在执行的 AI 任务');
+      return;
+    }
+    if (activeAiJob.status === 'succeeded' || activeAiJob.status === 'failed' || activeAiJob.status === 'cancelled') {
+      setAiMessage('该 AI 任务已完成，无需停止');
+      return;
+    }
+    setIsCheckingAiJob(true);
+    setAiError(null);
+    try {
+      const response = await fetch(`/api/bookmarks/ai-organize/${activeAiJob.id}`, {
+        method: 'DELETE',
+      });
+      const result = (await response.json().catch(() => null)) as unknown;
+
+      if (!response.ok) {
+        const errorMessage =
+          result && typeof result === 'object' && 'error' in result && typeof (result as { error?: unknown }).error === 'string'
+            ? ((result as { error?: string }).error ?? '停止任务失败，请稍后再试')
+            : '停止任务失败，请稍后再试';
+        throw new Error(errorMessage);
+      }
+
+      const job = result && typeof result === 'object' && 'job' in result ? (result as { job?: unknown }).job : null;
+      if (!isAiOrganizeJobSnapshot(job)) {
+        throw new Error('AI 停止任务响应异常，请稍后再试');
+      }
+
+      setActiveAiJob(job);
+      if (result && typeof result === 'object' && 'message' in result && typeof (result as { message?: unknown }).message === 'string') {
+        const nextMessage = (result as { message?: string }).message;
+        if (nextMessage) {
+          setAiMessage(nextMessage);
+        }
+      }
+    } catch (error) {
+      console.error('停止 AI 任务失败', error);
+      setAiError(error instanceof Error ? error.message : '停止任务失败，请稍后再试');
+    } finally {
+      setIsCheckingAiJob(false);
+    }
+  }, [activeAiJob]);
 
   if (!bookmarkDocument) {
     return (
@@ -795,7 +970,11 @@ export function NavigationViewer({
                   <h4 style={aiPanelTitleStyle}>选择自动整理策略</h4>
                   <p style={aiPanelSubtitleStyle}>生成的新目录将保留原始书签，支持随时撤销或删除。</p>
                 </div>
-                {isApplyingAi && <span style={aiWorkingStyle}>智能整理中…</span>}
+                {isAiBusy && (
+                  <span style={aiWorkingStyle}>
+                    {isCheckingAiJob ? '同步任务状态…' : jobInProgress ? '后台整理进行中…' : '正在提交任务…'}
+                  </span>
+                )}
               </div>
               <div style={aiStrategyListStyle}>
                 {AI_STRATEGIES.map((strategy) => (
@@ -803,11 +982,11 @@ export function NavigationViewer({
                     key={strategy.id}
                     type="button"
                     onClick={() => handleApplyAiStrategy(strategy.id)}
-                    disabled={isApplyingAi}
+                    disabled={isAiBusy}
                     style={{
                       ...aiStrategyButtonStyle,
-                      opacity: isApplyingAi ? 0.55 : 1,
-                      cursor: isApplyingAi ? 'not-allowed' : 'pointer',
+                      opacity: isAiBusy ? 0.55 : 1,
+                      cursor: isAiBusy ? 'not-allowed' : 'pointer',
                     }}
                   >
                     <div style={aiStrategyTitleStyle}>{strategy.title}</div>
@@ -815,6 +994,60 @@ export function NavigationViewer({
                   </button>
                 ))}
               </div>
+              {activeAiJob && (
+                <div style={aiJobStatusCardStyle}>
+                  <div style={aiJobStatusHeaderStyle}>
+                    <div style={aiJobStatusTitleGroupStyle}>
+                      <span style={aiJobStatusTitleStyle}>{`当前任务 · ${getStrategyDisplayName(activeAiJob.strategy)}`}</span>
+                      <span style={aiJobStatusMetaStyle}>
+                        共 {activeAiJob.totalBookmarks} 条书签
+                        {activeAiJob.cancelRequested && activeAiJob.status !== 'cancelled' ? ' · 已提交停止请求' : ''}
+                      </span>
+                    </div>
+                    <span
+                      style={{
+                        ...aiJobStatusBadgeStyle,
+                        ...aiJobStatusBadgeColors[activeAiJob.status],
+                      }}
+                    >
+                      {AI_JOB_STATUS_LABELS[activeAiJob.status]}
+                    </span>
+                  </div>
+                  {activeAiJob.status === 'succeeded' && activeAiJob.result?.plan.summary && (
+                    <p style={aiJobSummaryStyle}>{activeAiJob.result.plan.summary}</p>
+                  )}
+                  {activeAiJob.status === 'failed' && activeAiJob.error && (
+                    <p style={aiJobErrorTextStyle}>{activeAiJob.error}</p>
+                  )}
+                  <div style={aiJobActionsStyle}>
+                    <button
+                      type="button"
+                      onClick={handleRefreshAiJob}
+                      disabled={!activeAiJob || isCheckingAiJob}
+                      style={{
+                        ...aiJobActionButtonStyle,
+                        opacity: isCheckingAiJob ? 0.55 : 1,
+                        cursor: isCheckingAiJob ? 'not-allowed' : 'pointer',
+                      }}
+                    >
+                      {isCheckingAiJob ? '刷新中…' : '刷新任务状态'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCancelAiJob}
+                      disabled={!jobInProgress || isCheckingAiJob}
+                      style={{
+                        ...aiJobActionButtonStyle,
+                        ...aiJobDangerButtonStyle,
+                        opacity: !jobInProgress || isCheckingAiJob ? 0.55 : 1,
+                        cursor: !jobInProgress || isCheckingAiJob ? 'not-allowed' : 'pointer',
+                      }}
+                    >
+                      停止任务
+                    </button>
+                  </div>
+                </div>
+              )}
               {(aiMessage || aiError) && (
                 <div style={aiStatusInlineStyle}>
                   {aiMessage && <span style={aiSuccessStyle}>{aiMessage}</span>}
@@ -1397,16 +1630,47 @@ function renameFolderInNode(node: BookmarkNode, folderId: string, nextName: stri
   };
 }
 
-function isAiOrganizeResponsePayload(value: unknown): value is AiOrganizeResponsePayload {
+function isAiOrganizeJobSnapshot(value: unknown): value is AiOrganizeJobSnapshot {
   if (!value || typeof value !== 'object') {
     return false;
   }
-  const plan = (value as { plan?: unknown }).plan;
-  if (!plan || typeof plan !== 'object') {
+
+  const snapshot = value as {
+    id?: unknown;
+    status?: unknown;
+    strategy?: unknown;
+    strategyLabel?: unknown;
+    locale?: unknown;
+    totalBookmarks?: unknown;
+  };
+
+  if (typeof snapshot.id !== 'string' || !snapshot.id) {
     return false;
   }
-  const groups = (plan as { groups?: unknown }).groups;
-  return Array.isArray(groups);
+
+  const status = snapshot.status;
+  if (status !== 'pending' && status !== 'running' && status !== 'succeeded' && status !== 'failed' && status !== 'cancelled') {
+    return false;
+  }
+
+  const strategy = snapshot.strategy;
+  if (strategy !== 'domain-groups' && strategy !== 'semantic-clusters' && strategy !== 'alphabetical') {
+    return false;
+  }
+
+  if (typeof snapshot.strategyLabel !== 'string') {
+    return false;
+  }
+
+  if (typeof snapshot.locale !== 'string') {
+    return false;
+  }
+
+  if (typeof snapshot.totalBookmarks !== 'number') {
+    return false;
+  }
+
+  return true;
 }
 
 function buildFolderFromAiPlan(
@@ -1905,6 +2169,118 @@ const aiStrategyTitleStyle: React.CSSProperties = {
 const aiStrategyDescriptionStyle: React.CSSProperties = {
   fontSize: '13px',
   color: '#475569',
+};
+
+const aiJobStatusCardStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '12px',
+  marginTop: '4px',
+  padding: '16px',
+  borderRadius: '16px',
+  border: '1px solid rgba(148, 163, 184, 0.35)',
+  background: 'linear-gradient(135deg, rgba(240, 249, 255, 0.92), rgba(236, 254, 255, 0.9))',
+};
+
+const aiJobStatusHeaderStyle: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'flex-start',
+  gap: '12px',
+  flexWrap: 'wrap',
+};
+
+const aiJobStatusTitleGroupStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '4px',
+};
+
+const aiJobStatusTitleStyle: React.CSSProperties = {
+  fontSize: '15px',
+  fontWeight: 600,
+  color: '#0f172a',
+};
+
+const aiJobStatusMetaStyle: React.CSSProperties = {
+  fontSize: '13px',
+  color: '#475569',
+};
+
+const aiJobStatusBadgeStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: '4px 12px',
+  borderRadius: '999px',
+  fontSize: '12px',
+  fontWeight: 600,
+  letterSpacing: '0.3px',
+};
+
+const aiJobStatusBadgeColors: Record<AiOrganizeJobSnapshot['status'], React.CSSProperties> = {
+  pending: {
+    background: 'rgba(191, 219, 254, 0.35)',
+    color: '#1d4ed8',
+    border: '1px solid rgba(59, 130, 246, 0.25)',
+  },
+  running: {
+    background: 'rgba(187, 247, 208, 0.4)',
+    color: '#15803d',
+    border: '1px solid rgba(34, 197, 94, 0.28)',
+  },
+  succeeded: {
+    background: 'rgba(167, 243, 208, 0.45)',
+    color: '#047857',
+    border: '1px solid rgba(16, 185, 129, 0.32)',
+  },
+  failed: {
+    background: 'rgba(254, 202, 202, 0.45)',
+    color: '#b91c1c',
+    border: '1px solid rgba(248, 113, 113, 0.28)',
+  },
+  cancelled: {
+    background: 'rgba(226, 232, 240, 0.5)',
+    color: '#475569',
+    border: '1px solid rgba(148, 163, 184, 0.3)',
+  },
+};
+
+const aiJobSummaryStyle: React.CSSProperties = {
+  margin: 0,
+  fontSize: '13px',
+  color: '#1f2937',
+  lineHeight: 1.5,
+};
+
+const aiJobErrorTextStyle: React.CSSProperties = {
+  margin: 0,
+  fontSize: '13px',
+  color: '#b91c1c',
+  lineHeight: 1.5,
+};
+
+const aiJobActionsStyle: React.CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: '10px',
+};
+
+const aiJobActionButtonStyle: React.CSSProperties = {
+  padding: '8px 14px',
+  borderRadius: '10px',
+  border: '1px solid rgba(59, 130, 246, 0.35)',
+  background: '#ffffff',
+  color: '#1d4ed8',
+  fontSize: '13px',
+  fontWeight: 600,
+  cursor: 'pointer',
+  transition: 'background 0.2s ease, color 0.2s ease, border 0.2s ease',
+};
+
+const aiJobDangerButtonStyle: React.CSSProperties = {
+  border: '1px solid rgba(248, 113, 113, 0.45)',
+  color: '#dc2626',
 };
 
 const aiStatusInlineStyle: React.CSSProperties = {

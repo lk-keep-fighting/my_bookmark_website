@@ -41,6 +41,28 @@ export interface AiOrganizeResponsePayload {
   };
 }
 
+export type AiOrganizeJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
+
+export interface AiOrganizeJobSnapshot {
+  id: string;
+  status: AiOrganizeJobStatus;
+  strategy: AiStrategyId;
+  strategyLabel: string;
+  locale: string;
+  totalBookmarks: number;
+  cancelRequested: boolean;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  result?: AiOrganizeResponsePayload;
+  error?: string;
+}
+
+export interface AiOrganizeJobResponse {
+  job: AiOrganizeJobSnapshot;
+}
+
 const STRATEGY_DISPLAY_NAMES: Record<AiStrategyId, string> = {
   "domain-groups": "域名分组",
   "semantic-clusters": "语义主题",

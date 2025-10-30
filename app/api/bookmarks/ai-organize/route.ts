@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { jsonrepair } from "jsonrepair";
 import type {
+  AiOrganizeJobResponse,
   AiOrganizeRequestPayload,
   AiOrganizeResponsePayload,
   AiPlanBookmark,
@@ -9,6 +10,13 @@ import type {
   AiStrategyId,
 } from "@/lib/bookmarks/ai";
 import { getStrategyDisplayName } from "@/lib/bookmarks/ai";
+import {
+  clearAiOrganizeJobController,
+  createAiOrganizeJob,
+  getAiOrganizeJob,
+  setAiOrganizeJobController,
+  updateAiOrganizeJob,
+} from "@/lib/bookmarks/ai-jobs";
 
 const API_ENDPOINT = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
 const MODEL_NAME = "glm-4.5-air";
@@ -88,21 +96,132 @@ export async function POST(request: Request) {
   const strategyLabel = getStrategyDisplayName(strategy);
   const locale = typeof payload?.locale === "string" && payload.locale.trim() ? payload.locale.trim() : "zh-CN";
 
-  try {
-    const result = await generateAiPlan({
-      apiKey,
-      strategy,
-      strategyLabel,
-      locale,
-      bookmarks: sanitizedBookmarks,
+  const job = createAiOrganizeJob({
+    strategy,
+    strategyLabel,
+    locale,
+    totalBookmarks: sanitizedBookmarks.length,
+  });
+
+  launchAiOrganizeJob(job.id, {
+    apiKey,
+    strategy,
+    strategyLabel,
+    locale,
+    bookmarks: sanitizedBookmarks,
+  });
+
+  const response: AiOrganizeJobResponse & { message: string } = {
+    job,
+    message: "AI 整理任务已在后台启动，请稍后刷新任务状态或手动停止。",
+  };
+
+  return NextResponse.json(response, { status: 202 });
+}
+
+type LaunchContext = {
+  apiKey: string;
+  strategy: AiStrategyId;
+  strategyLabel: string;
+  locale: string;
+  bookmarks: SanitizedBookmark[];
+};
+
+function launchAiOrganizeJob(jobId: string, context: LaunchContext): void {
+  void (async () => {
+    const initial = getAiOrganizeJob(jobId);
+    if (!initial) {
+      return;
+    }
+
+    if (initial.cancelRequested || initial.status !== "pending") {
+      if (initial.cancelRequested && initial.status !== "cancelled") {
+        updateAiOrganizeJob(jobId, { status: "cancelled", finishedAt: new Date().toISOString() });
+      }
+      return;
+    }
+
+    const startedAt = new Date().toISOString();
+    const running = updateAiOrganizeJob(jobId, {
+      status: "running",
+      startedAt,
+      error: undefined,
     });
 
-    return NextResponse.json(result);
-  } catch (error) {
-    const status = error instanceof AiRequestError ? error.status : 502;
-    const message = error instanceof Error ? error.message : "调用 AI 接口失败";
-    return NextResponse.json({ error: message }, { status });
-  }
+    if (!running || running.status !== "running") {
+      return;
+    }
+
+    const controller = new AbortController();
+    setAiOrganizeJobController(jobId, controller);
+
+    try {
+      const result = await generateAiPlan({
+        apiKey: context.apiKey,
+        strategy: context.strategy,
+        strategyLabel: context.strategyLabel,
+        locale: context.locale,
+        bookmarks: context.bookmarks,
+        abortSignal: controller.signal,
+      });
+
+      const latest = getAiOrganizeJob(jobId);
+      const finishedAt = new Date().toISOString();
+      if (latest?.cancelRequested) {
+        updateAiOrganizeJob(jobId, {
+          status: "cancelled",
+          finishedAt,
+          cancelRequested: true,
+          result: undefined,
+        });
+        return;
+      }
+
+      updateAiOrganizeJob(jobId, {
+        status: "succeeded",
+        finishedAt,
+        result,
+        error: undefined,
+        cancelRequested: false,
+      });
+    } catch (error) {
+      const finishedAt = new Date().toISOString();
+      if (isAbortError(error) || getAiOrganizeJob(jobId)?.cancelRequested) {
+        updateAiOrganizeJob(jobId, {
+          status: "cancelled",
+          finishedAt,
+          result: undefined,
+          cancelRequested: true,
+        });
+      } else if (error instanceof AiRequestError) {
+        updateAiOrganizeJob(jobId, {
+          status: "failed",
+          finishedAt,
+          error: error.message,
+          cancelRequested: false,
+        });
+      } else {
+        const message = error instanceof Error ? error.message : "AI 整理任务执行失败";
+        updateAiOrganizeJob(jobId, {
+          status: "failed",
+          finishedAt,
+          error: message,
+          cancelRequested: false,
+        });
+      }
+    } finally {
+      clearAiOrganizeJobController(jobId, controller);
+    }
+  })().catch((error) => {
+    clearAiOrganizeJobController(jobId);
+    const message = error instanceof Error ? error.message : "AI 整理任务执行失败";
+    updateAiOrganizeJob(jobId, {
+      status: "failed",
+      finishedAt: new Date().toISOString(),
+      error: message,
+      cancelRequested: false,
+    });
+  });
 }
 
 async function generateAiPlan({
@@ -111,16 +230,20 @@ async function generateAiPlan({
   strategyLabel,
   locale,
   bookmarks,
+  abortSignal,
 }: {
   apiKey: string;
   strategy: AiStrategyId;
   strategyLabel: string;
   locale: string;
   bookmarks: SanitizedBookmark[];
+  abortSignal?: AbortSignal;
 }): Promise<AiOrganizeResponsePayload> {
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt < MAX_AI_ATTEMPTS; attempt += 1) {
+    throwIfAborted(abortSignal);
+
     const digestOptions = getDigestOptions(bookmarks.length, attempt > 0);
     const digest = bookmarks.map((bookmark, index) => formatBookmarkDigest(bookmark, index, digestOptions)).join("\n");
     const userPrompt = buildUserPrompt({
@@ -134,11 +257,15 @@ async function generateAiPlan({
     const messages = buildMessages(strategy, userPrompt, attempt);
 
     try {
-      const { rawContent, usage } = await requestAiCompletion({ apiKey, messages });
+      const { rawContent, usage } = await requestAiCompletion({ apiKey, messages, abortSignal });
       const plan = normalizePlan(rawContent);
       return { plan, rawContent, usage };
     } catch (error) {
       if (error instanceof AiRequestError) {
+        throw error;
+      }
+
+      if (isAbortError(error)) {
         throw error;
       }
 
@@ -159,45 +286,50 @@ async function generateAiPlan({
 async function requestAiCompletion({
   apiKey,
   messages,
+  abortSignal,
 }: {
   apiKey: string;
   messages: ChatMessage[];
+  abortSignal?: AbortSignal;
 }): Promise<{ rawContent: string; usage?: AiOrganizeResponsePayload["usage"] }> {
-  const timeoutSignal =
-    typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
-      ? AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-      : undefined;
+  const timeoutController = createTimeoutController(REQUEST_TIMEOUT_MS);
+  const mergedSignal = mergeAbortSignals([abortSignal, timeoutController?.signal]);
 
-  const response = await fetch(API_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: MODEL_NAME,
-      temperature: 0.3,
-      stream: false,
-      max_tokens: MAX_OUTPUT_TOKENS,
-      messages,
-    }),
-    signal: timeoutSignal,
-  });
+  try {
+    const response = await fetch(API_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: MODEL_NAME,
+        temperature: 0.3,
+        stream: false,
+        max_tokens: MAX_OUTPUT_TOKENS,
+        messages,
+      }),
+      signal: mergedSignal?.signal,
+    });
 
-  const payloadJson = await safeReadJson(response);
-  if (!response.ok) {
-    const reason =
-      payloadJson && typeof payloadJson === "object" && "error" in payloadJson
-        ? (payloadJson as { error?: string }).error
-        : undefined;
-    const status = response.status >= 400 ? response.status : 500;
-    throw new AiRequestError(reason ?? `AI 接口请求失败（${response.status}）`, status);
+    const payloadJson = await safeReadJson(response);
+    if (!response.ok) {
+      const reason =
+        payloadJson && typeof payloadJson === "object" && "error" in payloadJson
+          ? (payloadJson as { error?: string }).error
+          : undefined;
+      const status = response.status >= 400 ? response.status : 500;
+      throw new AiRequestError(reason ?? `AI 接口请求失败（${response.status}）`, status);
+    }
+
+    const rawContent = extractCompletionContent(payloadJson);
+    const usage = getUsageSummary(payloadJson);
+
+    return { rawContent, usage };
+  } finally {
+    timeoutController?.dispose();
+    mergedSignal?.disconnect();
   }
-
-  const rawContent = extractCompletionContent(payloadJson);
-  const usage = getUsageSummary(payloadJson);
-
-  return { rawContent, usage };
 }
 
 function buildMessages(strategy: AiStrategyId, userPrompt: string, attempt: number): ChatMessage[] {
@@ -532,4 +664,82 @@ function getUsageSummary(payload: unknown) {
     completionTokens,
     totalTokens,
   };
+}
+
+function createTimeoutController(ms: number): { signal: AbortSignal; dispose: () => void } | null {
+  if (typeof AbortController === "undefined" || !Number.isFinite(ms) || ms <= 0) {
+    return null;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    const timeoutError = new Error("AI 请求超时");
+    timeoutError.name = "TimeoutError";
+    controller.abort(timeoutError);
+  }, ms);
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timer);
+    },
+  };
+}
+
+function mergeAbortSignals(signals: Array<AbortSignal | undefined | null>):
+  | { signal: AbortSignal; disconnect: () => void }
+  | null {
+  const valid = signals.filter((signal): signal is AbortSignal => Boolean(signal));
+  if (valid.length === 0) {
+    return null;
+  }
+  if (valid.length === 1) {
+    return { signal: valid[0], disconnect: () => undefined };
+  }
+
+  const controller = new AbortController();
+  const cleanups: Array<() => void> = [];
+
+  for (const signal of valid) {
+    if (signal.aborted) {
+      controller.abort(signal.reason);
+      break;
+    }
+    const listener = () => {
+      controller.abort(signal.reason);
+    };
+    signal.addEventListener("abort", listener, { once: true });
+    cleanups.push(() => signal.removeEventListener("abort", listener));
+  }
+
+  const disconnect = () => {
+    cleanups.forEach((cleanup) => cleanup());
+  };
+
+  if (controller.signal.aborted) {
+    disconnect();
+  }
+
+  return { signal: controller.signal, disconnect };
+}
+
+function isAbortError(error: unknown): error is Error {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message ?? "";
+  return error.name === "AbortError" || message.includes("The operation was aborted");
+}
+
+function throwIfAborted(signal: AbortSignal | undefined) {
+  if (!signal) {
+    return;
+  }
+  if (signal.aborted) {
+    const reason = signal.reason;
+    if (reason instanceof Error) {
+      throw reason;
+    }
+    const abortError = new Error("The operation was aborted");
+    abortError.name = "AbortError";
+    throw abortError;
+  }
 }
