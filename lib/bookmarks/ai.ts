@@ -29,6 +29,7 @@ export interface AiOrganizeRequestPayload {
   strategy: AiStrategyId;
   bookmarks: AiBookmarkDigest[];
   locale?: string;
+  themes?: string[];
 }
 
 export interface AiOrganizeResponsePayload {
@@ -57,6 +58,7 @@ export interface AiOrganizeJobSnapshot {
   finishedAt?: string;
   result?: AiOrganizeResponsePayload;
   error?: string;
+  themes?: string[];
 }
 
 export interface AiOrganizeJobResponse {

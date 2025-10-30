@@ -7,6 +7,7 @@ import { bookmarkDocumentToHtml, calculateBookmarkStatistics } from '@/lib/bookm
 import type {
   AiOrganizeJobSnapshot,
   AiOrganizeRequestPayload,
+  AiOrganizeResponsePayload,
   AiPlanGroup,
   AiPlanResult,
   AiStrategyId,
@@ -70,13 +71,25 @@ const AI_STRATEGIES: Array<{ id: AiStrategyId; title: string; description: strin
   {
     id: 'semantic-clusters',
     title: '语义主题整理',
-    description: '依据常见用途划分到社交、效率、开发等类别',
+    description: '选择常用主题后自动匹配归类网页',
   },
   {
     id: 'alphabetical',
     title: '字母顺序索引',
     description: '以名称首字母生成快速导航目录',
   },
+];
+
+const PRESET_SEMANTIC_THEMES = [
+  '社交 & 社区',
+  '效率 & 办公',
+  '开发 & 技术',
+  '资讯 & 阅读',
+  '影音 & 娱乐',
+  '学习 & 教育',
+  '生活服务',
+  '理财 & 投资',
+  '工具 & 资源',
 ];
 
 const AI_JOB_STATUS_LABELS: Record<AiOrganizeJobSnapshot['status'], string> = {
@@ -164,6 +177,9 @@ export function NavigationViewer({
   const [activeAiJob, setActiveAiJob] = useState<AiOrganizeJobSnapshot | null>(null);
   const [aiJobMatches, setAiJobMatches] = useState<BookmarkMatch[] | null>(null);
   const [isCheckingAiJob, setIsCheckingAiJob] = useState(false);
+  const [selectedSemanticThemes, setSelectedSemanticThemes] = useState<string[]>(() => PRESET_SEMANTIC_THEMES.slice(0, 4));
+  const [semanticCustomThemes, setSemanticCustomThemes] = useState<string[]>([]);
+  const [semanticThemeInput, setSemanticThemeInput] = useState('');
   const appliedAiJobIdRef = useRef<string | null>(null);
   const [collapsedFolderIds, setCollapsedFolderIds] = useState<Set<string>>(() => new Set());
   const previousRootIdRef = useRef<string | null>(null);
@@ -173,6 +189,23 @@ export function NavigationViewer({
     activeAiJob && (activeAiJob.status === 'pending' || activeAiJob.status === 'running'),
   );
   const isAiBusy = isApplyingAi || isCheckingAiJob || jobInProgress;
+
+  const semanticThemesForPayload = useMemo(() => {
+    const unique = new Set<string>();
+    for (const theme of selectedSemanticThemes) {
+      const trimmed = theme.trim();
+      if (trimmed) {
+        unique.add(trimmed);
+      }
+    }
+    for (const theme of semanticCustomThemes) {
+      const trimmed = theme.trim();
+      if (trimmed) {
+        unique.add(trimmed);
+      }
+    }
+    return Array.from(unique).slice(0, 24);
+  }, [selectedSemanticThemes, semanticCustomThemes]);
 
   const trimmedQuery = query.trim();
   const normalizedQuery = trimmedQuery.toLowerCase();
@@ -307,13 +340,11 @@ export function NavigationViewer({
       return;
     }
 
+    if (appliedAiJobIdRef.current === activeAiJob.id) {
+      return;
+    }
+
     if (activeAiJob.status === 'succeeded' && activeAiJob.result) {
-      if (!editable || !bookmarkDocument || !onDocumentChange) {
-        return;
-      }
-      if (appliedAiJobIdRef.current === activeAiJob.id) {
-        return;
-      }
       if (!aiJobMatches || aiJobMatches.length === 0) {
         setAiError('未找到原始书签上下文，无法应用本次整理结果。');
         appliedAiJobIdRef.current = activeAiJob.id;
@@ -322,7 +353,7 @@ export function NavigationViewer({
         return;
       }
 
-      const nextFolder = buildFolderFromAiPlan(activeAiJob.result.plan, activeAiJob.strategy, aiJobMatches);
+      const nextFolder = applyPlanToDocument(activeAiJob.result.plan, activeAiJob.strategy, aiJobMatches);
       if (!nextFolder) {
         setAiError('未能生成有效的整理结果，请稍后再试');
         appliedAiJobIdRef.current = activeAiJob.id;
@@ -331,33 +362,13 @@ export function NavigationViewer({
         return;
       }
 
-      const nextRootChildren = [...(bookmarkDocument.root.children ?? []), nextFolder];
-      const nextRoot: BookmarkNode = {
-        ...bookmarkDocument.root,
-        children: nextRootChildren,
-      };
-      const nextDocument: BookmarkDocument = {
-        ...bookmarkDocument,
-        root: nextRoot,
-        statistics: calculateBookmarkStatistics(nextRoot),
-      };
-
-      onDocumentChange?.(nextDocument);
       const successMessage =
         activeAiJob.result.plan.summary?.trim() ?? `已生成「${nextFolder.name}」分类，原有书签保持不变。`;
       setAiMessage(successMessage);
-      setSelectedFolderId(nextFolder.id);
-      if (searchActive) {
-        setQuery('');
-      }
+      setAiError(null);
       appliedAiJobIdRef.current = activeAiJob.id;
       setActiveAiJob(null);
       setAiJobMatches(null);
-      setIsAiPanelOpen(false);
-      return;
-    }
-
-    if (appliedAiJobIdRef.current === activeAiJob.id) {
       return;
     }
 
@@ -375,11 +386,12 @@ export function NavigationViewer({
 
     if (activeAiJob.status === 'cancelled') {
       setAiMessage('AI 整理任务已停止');
+      setAiError(null);
       appliedAiJobIdRef.current = activeAiJob.id;
       setActiveAiJob(null);
       setAiJobMatches(null);
     }
-  }, [activeAiJob, aiJobMatches, bookmarkDocument, editable, onDocumentChange, searchActive]);
+  }, [activeAiJob, aiJobMatches, applyPlanToDocument]);
 
   const activeFolderId = useMemo(() => {
     if (!bookmarkDocument) {
@@ -619,6 +631,38 @@ export function NavigationViewer({
     }
   }, [bookmarkDocument]);
 
+  const applyPlanToDocument = useCallback(
+    (plan: AiPlanResult, strategyId: AiStrategyId, matches: BookmarkMatch[]) => {
+      if (!editable || !bookmarkDocument || !onDocumentChange) {
+        return null;
+      }
+      const nextFolder = buildFolderFromAiPlan(plan, strategyId, matches);
+      if (!nextFolder) {
+        return null;
+      }
+
+      const nextRootChildren = [...(bookmarkDocument.root.children ?? []), nextFolder];
+      const nextRoot: BookmarkNode = {
+        ...bookmarkDocument.root,
+        children: nextRootChildren,
+      };
+      const nextDocument: BookmarkDocument = {
+        ...bookmarkDocument,
+        root: nextRoot,
+        statistics: calculateBookmarkStatistics(nextRoot),
+      };
+
+      onDocumentChange?.(nextDocument);
+      setSelectedFolderId(nextFolder.id);
+      if (searchActive) {
+        setQuery('');
+      }
+      setIsAiPanelOpen(false);
+      return nextFolder;
+    },
+    [editable, bookmarkDocument, onDocumentChange, searchActive, setSelectedFolderId, setQuery, setIsAiPanelOpen],
+  );
+
   const handleApplyAiStrategy = useCallback(
     async (strategyId: AiStrategyId) => {
       if (!editable || !bookmarkDocument) {
@@ -632,6 +676,11 @@ export function NavigationViewer({
         setAiError('当前书签为空，无法执行自动整理');
         return;
       }
+      if (strategyId === 'semantic-clusters' && semanticThemesForPayload.length === 0) {
+        setAiError('请至少选择或添加一个主题后再执行自动整理');
+        return;
+      }
+
       setIsApplyingAi(true);
       setAiError(null);
       setAiMessage(null);
@@ -654,6 +703,10 @@ export function NavigationViewer({
         }),
       };
 
+      if (strategyId === 'semantic-clusters' && semanticThemesForPayload.length > 0) {
+        payload.themes = semanticThemesForPayload;
+      }
+
       try {
         const response = await fetch('/api/bookmarks/ai-organize', {
           method: 'POST',
@@ -671,6 +724,21 @@ export function NavigationViewer({
               ? ((result as { error?: string }).error ?? '自动整理任务发起失败，请稍后再试')
               : '自动整理任务发起失败，请稍后再试';
           throw new Error(errorMessage);
+        }
+
+        if (isAiOrganizeResponsePayload(result)) {
+          const nextFolder = applyPlanToDocument(result.plan, strategyId, matchesForPayload);
+          if (!nextFolder) {
+            throw new Error('未能生成有效的整理结果，请稍后再试');
+          }
+          const successMessage =
+            result.plan.summary?.trim() ?? `已生成「${nextFolder.name}」分类，原有书签保持不变。`;
+          setAiMessage(successMessage);
+          setAiError(null);
+          appliedAiJobIdRef.current = null;
+          setActiveAiJob(null);
+          setAiJobMatches(null);
+          return;
         }
 
         const job = result && typeof result === 'object' && 'job' in result ? (result as { job?: unknown }).job : null;
@@ -695,8 +763,70 @@ export function NavigationViewer({
         setIsApplyingAi(false);
       }
     },
-    [editable, bookmarkDocument, bookmarkMatches, jobInProgress],
+    [
+      editable,
+      bookmarkDocument,
+      bookmarkMatches,
+      jobInProgress,
+      semanticThemesForPayload,
+      applyPlanToDocument,
+    ],
   );
+
+  const handleToggleSemanticTheme = useCallback(
+    (theme: string) => {
+      if (isAiBusy) {
+        return;
+      }
+      setSelectedSemanticThemes((previous) => {
+        if (previous.includes(theme)) {
+          return previous.filter((item) => item !== theme);
+        }
+        const merged = [...previous, theme];
+        return PRESET_SEMANTIC_THEMES.filter((item) => merged.includes(item));
+      });
+    },
+    [isAiBusy],
+  );
+
+  const handleAddSemanticThemes = useCallback(() => {
+    if (isAiBusy) {
+      return;
+    }
+    const candidates = semanticThemeInput
+      .split(/[\n,，;；]+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (candidates.length === 0) {
+      return;
+    }
+    setSelectedSemanticThemes((previous) => {
+      const selectedSet = new Set(previous);
+      for (const candidate of candidates) {
+        if (PRESET_SEMANTIC_THEMES.includes(candidate)) {
+          selectedSet.add(candidate);
+        }
+      }
+      return PRESET_SEMANTIC_THEMES.filter((item) => selectedSet.has(item));
+    });
+    setSemanticCustomThemes((previous) => {
+      const unique = new Set(previous);
+      for (const candidate of candidates) {
+        if (!PRESET_SEMANTIC_THEMES.includes(candidate)) {
+          unique.add(candidate);
+        }
+      }
+      return Array.from(unique).slice(0, 24);
+    });
+    setSemanticThemeInput('');
+  }, [semanticThemeInput, isAiBusy]);
+
+  const handleRemoveCustomTheme = useCallback((theme: string) => {
+    if (isAiBusy) {
+      return;
+    }
+    setSemanticCustomThemes((previous) => previous.filter((item) => item !== theme));
+  }, [isAiBusy]);
 
   const handleRefreshAiJob = useCallback(async () => {
     if (!activeAiJob) {
@@ -994,6 +1124,96 @@ export function NavigationViewer({
                   </button>
                 ))}
               </div>
+
+              <div style={aiThemeSectionStyle}>
+                <div style={aiThemeHeaderStyle}>
+                  <span style={aiThemeTitleStyle}>语义主题</span>
+                  <span style={aiThemeHintStyle}>用于“语义主题整理”策略，可多选内置主题或自定义</span>
+                </div>
+                <div style={aiThemePresetListStyle}>
+                  {PRESET_SEMANTIC_THEMES.map((theme) => {
+                    const selected = selectedSemanticThemes.includes(theme);
+                    return (
+                      <button
+                        key={theme}
+                        type="button"
+                        onClick={() => handleToggleSemanticTheme(theme)}
+                        disabled={isAiBusy}
+                        style={{
+                          ...aiThemePresetButtonStyle,
+                          background: selected ? 'rgba(59, 130, 246, 0.16)' : 'rgba(255, 255, 255, 0.85)',
+                          borderColor: selected ? 'rgba(59, 130, 246, 0.45)' : 'rgba(148, 163, 184, 0.4)',
+                          color: selected ? '#1d4ed8' : '#1f2937',
+                          opacity: isAiBusy ? 0.6 : 1,
+                          cursor: isAiBusy ? 'not-allowed' : 'pointer',
+                        }}
+                      >
+                        {selected ? '✓ ' : ''}
+                        {theme}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={aiThemeCustomRowStyle}>
+                  <input
+                    value={semanticThemeInput}
+                    onChange={(event) => setSemanticThemeInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        handleAddSemanticThemes();
+                      }
+                    }}
+                    placeholder="自定义主题，使用逗号或换行分隔"
+                    style={{
+                      ...aiThemeInputStyle,
+                      background: isAiBusy ? 'rgba(248, 250, 252, 0.8)' : aiThemeInputStyle.background,
+                    }}
+                    disabled={isAiBusy}
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddSemanticThemes}
+                    style={{
+                      ...aiThemeAddButtonStyle,
+                      opacity: isAiBusy || !semanticThemeInput.trim() ? 0.6 : 1,
+                      cursor: isAiBusy || !semanticThemeInput.trim() ? 'not-allowed' : 'pointer',
+                    }}
+                    disabled={isAiBusy || !semanticThemeInput.trim()}
+                  >
+                    添加
+                  </button>
+                </div>
+                {semanticThemesForPayload.length > 0 && (
+                  <div style={aiThemeSelectedListStyle}>
+                    {semanticThemesForPayload.map((theme) => {
+                      const isPreset = PRESET_SEMANTIC_THEMES.includes(theme);
+                      const removable = !isPreset;
+                      return (
+                        <span key={theme} style={aiThemeChipStyle}>
+                          {theme}
+                          {removable && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveCustomTheme(theme)}
+                              style={{
+                                ...aiThemeChipRemoveButtonStyle,
+                                opacity: isAiBusy ? 0.6 : 1,
+                                cursor: isAiBusy ? 'not-allowed' : 'pointer',
+                              }}
+                              aria-label={`移除 ${theme}`}
+                              disabled={isAiBusy}
+                            >
+                              ×
+                            </button>
+                          )}
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
               {activeAiJob && (
                 <div style={aiJobStatusCardStyle}>
                   <div style={aiJobStatusHeaderStyle}>
@@ -1003,6 +1223,9 @@ export function NavigationViewer({
                         共 {activeAiJob.totalBookmarks} 条书签
                         {activeAiJob.cancelRequested && activeAiJob.status !== 'cancelled' ? ' · 已提交停止请求' : ''}
                       </span>
+                      {activeAiJob.themes && activeAiJob.themes.length > 0 && (
+                        <div style={aiJobThemeListStyle}>主题：{activeAiJob.themes.join('、')}</div>
+                      )}
                     </div>
                     <span
                       style={{
@@ -1630,6 +1853,18 @@ function renameFolderInNode(node: BookmarkNode, folderId: string, nextName: stri
   };
 }
 
+function isAiOrganizeResponsePayload(value: unknown): value is AiOrganizeResponsePayload {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const plan = (value as { plan?: unknown }).plan;
+  if (!plan || typeof plan !== 'object') {
+    return false;
+  }
+  const groups = (plan as { groups?: unknown }).groups;
+  return Array.isArray(groups);
+}
+
 function isAiOrganizeJobSnapshot(value: unknown): value is AiOrganizeJobSnapshot {
   if (!value || typeof value !== 'object') {
     return false;
@@ -2171,6 +2406,106 @@ const aiStrategyDescriptionStyle: React.CSSProperties = {
   color: '#475569',
 };
 
+const aiThemeSectionStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '12px',
+  marginTop: '8px',
+  padding: '16px',
+  borderRadius: '16px',
+  border: '1px solid rgba(148, 163, 184, 0.3)',
+  background: 'rgba(255, 255, 255, 0.9)',
+};
+
+const aiThemeHeaderStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '4px',
+};
+
+const aiThemeTitleStyle: React.CSSProperties = {
+  fontSize: '14px',
+  fontWeight: 600,
+  color: '#1d4ed8',
+};
+
+const aiThemeHintStyle: React.CSSProperties = {
+  fontSize: '12px',
+  color: '#64748b',
+};
+
+const aiThemePresetListStyle: React.CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: '8px',
+};
+
+const aiThemePresetButtonStyle: React.CSSProperties = {
+  padding: '8px 12px',
+  borderRadius: '999px',
+  border: '1px solid rgba(148, 163, 184, 0.4)',
+  background: 'rgba(255, 255, 255, 0.85)',
+  fontSize: '12px',
+  fontWeight: 500,
+  cursor: 'pointer',
+};
+
+const aiThemeCustomRowStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: '8px',
+  alignItems: 'center',
+  flexWrap: 'wrap',
+};
+
+const aiThemeInputStyle: React.CSSProperties = {
+  flex: '1 1 220px',
+  minWidth: '200px',
+  padding: '8px 12px',
+  borderRadius: '10px',
+  border: '1px solid rgba(148, 163, 184, 0.5)',
+  fontSize: '13px',
+  background: 'rgba(255, 255, 255, 0.96)',
+};
+
+const aiThemeAddButtonStyle: React.CSSProperties = {
+  padding: '8px 14px',
+  borderRadius: '10px',
+  border: '1px solid rgba(59, 130, 246, 0.45)',
+  background: 'rgba(59, 130, 246, 0.12)',
+  color: '#1d4ed8',
+  fontSize: '13px',
+  fontWeight: 600,
+  cursor: 'pointer',
+};
+
+const aiThemeSelectedListStyle: React.CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: '8px',
+};
+
+const aiThemeChipStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '6px',
+  padding: '6px 10px',
+  borderRadius: '999px',
+  background: 'rgba(191, 219, 254, 0.35)',
+  color: '#1d4ed8',
+  fontSize: '12px',
+  border: '1px solid rgba(148, 163, 184, 0.3)',
+};
+
+const aiThemeChipRemoveButtonStyle: React.CSSProperties = {
+  border: 'none',
+  background: 'transparent',
+  color: '#2563eb',
+  cursor: 'pointer',
+  fontSize: '12px',
+  lineHeight: 1,
+  padding: 0,
+};
+
 const aiJobStatusCardStyle: React.CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
@@ -2205,6 +2540,13 @@ const aiJobStatusTitleStyle: React.CSSProperties = {
 const aiJobStatusMetaStyle: React.CSSProperties = {
   fontSize: '13px',
   color: '#475569',
+};
+
+const aiJobThemeListStyle: React.CSSProperties = {
+  fontSize: '12px',
+  color: '#475569',
+  marginTop: '4px',
+  lineHeight: 1.4,
 };
 
 const aiJobStatusBadgeStyle: React.CSSProperties = {

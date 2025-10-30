@@ -38,6 +38,7 @@ export function createAiOrganizeJob(params: {
   strategyLabel: string;
   locale: string;
   totalBookmarks: number;
+  themes?: string[];
 }): AiOrganizeJobSnapshot {
   const now = new Date().toISOString();
   const snapshot: AiOrganizeJobSnapshot = {
@@ -50,6 +51,7 @@ export function createAiOrganizeJob(params: {
     cancelRequested: false,
     createdAt: now,
     updatedAt: now,
+    themes: params.themes && params.themes.length > 0 ? [...new Set(params.themes.map((theme) => theme.trim()).filter(Boolean))] : undefined,
   };
 
   const store = getStore();

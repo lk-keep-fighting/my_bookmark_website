@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { jsonrepair } from "jsonrepair";
+import { pinyin } from "pinyin-pro";
 import type {
   AiOrganizeJobResponse,
   AiOrganizeRequestPayload,
@@ -26,13 +27,26 @@ const REQUEST_TIMEOUT_MS = 90_000;
 const MAX_OUTPUT_TOKENS = 4_000;
 const DEFAULT_FIELD_LIMIT = 120;
 const RETRY_SYSTEM_SUFFIX = `- 特别提醒：上一轮输出的 JSON 未能成功解析，本次必须严格遵守上述格式，仅返回合法 JSON。\n- 如非必要，请省略与原名称相同的 newName 字段，以控制输出长度。\n`;
+const DOMAIN_FALLBACK_GROUP = "其他收藏";
+const DEFAULT_SEMANTIC_THEMES = [
+  "社交 & 社区",
+  "效率 & 办公",
+  "开发 & 技术",
+  "资讯 & 阅读",
+  "影音 & 娱乐",
+  "学习 & 教育",
+  "生活服务",
+  "理财 & 投资",
+  "工具 & 资源",
+];
+const LETTERS = Array.from({ length: 26 }, (_, index) => String.fromCharCode(65 + index));
 
 const BASE_SYSTEM_PROMPT = `你是一名资深信息架构专家，负责根据用户提供的书签列表生成便于浏览的分类方案。\n\n请牢记以下规则：\n- 只能返回 JSON 文本，不允许输出额外的说明、前缀或代码块标记。\n- JSON 必须严格符合以下 TypeScript 类型定义：\n  type OrganizedFolderPlan = {\n    folderTitle?: string;\n    summary?: string;\n    groups: Array<{\n      name: string;\n      bookmarks: Array<{\n        id: string;\n        newName?: string;\n      }>;\n    }>;\n  };\n- groups 数量不要超过 12 个，每个 group 至少包含 1 个书签。\n- 不要虚构书签 ID，也不要遗漏输入中已经列出的书签。\n- 可选的 newName 字段用于提供更清晰或规范的名称，若无需修改可以省略。\n- 输出请尽量紧凑，避免冗余空格和换行，以减少字符长度。\n- 若某些书签不属于主要分组，可放入名为“其他收藏”的分组中。\n`;
 
 const STRATEGY_INSTRUCTIONS: Record<AiStrategyId, string> = {
-  "domain-groups": `策略：域名智能分组。\n- 优先按照书签所属站点或域名进行聚合，同一域名的书签应归在同一 group。\n- group 名称建议包含域名及一句简洁的中文说明，例如“github.com · 开源社区”。\n- 对于数量较少或无法识别域名的书签，可以统一放入“其他收藏”。\n`,
-  "semantic-clusters": `策略：语义主题整理。\n- 根据常见使用场景或主题（如“社交 & 社区”“效率 & 办公”“开发 & 技术”“资讯 & 阅读”“影音 & 娱乐”等）进行分组。\n- group 名称使用清晰的中文主题名称，必要时可自定义新的主题。\n- 无法归类的条目放入“其他收藏”，确保每条书签都被收录。\n`,
-  alphabetical: `策略：字母顺序索引。\n- 按照书签名称或建议名称（newName）的首字母进行分组，使用大写字母 A-Z。\n- 中文名称请转换为常见拼音首字母后再归类，例如“知乎”应归入“Z 开头”。\n- group 名称可采用“X 开头”形式，如“A 开头”“B 开头”。\n- 无法确定首字母的条目归入“其他收藏”。\n`,
+  "domain-groups": `策略：域名智能分组。\n- 优先按照书签所属站点或域名进行聚合，同一域名的书签应归在同一 group。\n- group 名称建议直接使用域名，必要时附带简短说明，例如“github.com”或“zhihu.com · 社区问答”。\n- 对于无域名的书签，可统一放入“其他收藏”。\n`,
+  "semantic-clusters": `策略：语义主题整理。\n- 根据用户提供的主题（如“社交 & 社区”“效率 & 办公”等）进行分组。\n- 仅使用提供的主题名称生成分组，并确保每条书签都被收录。\n- 若无法匹配任何主题，请放入“其他收藏”。\n`,
+  alphabetical: `策略：字母顺序索引。\n- 按照书签名称或建议名称（newName）的首字母进行分组，使用大写字母 A-Z。\n- 中文名称请转换为常见拼音首字母后再归类，例如“知乎”应归入“Z 开头”。\n- 无法确定首字母的条目归入“其他收藏”。\n`,
 };
 
 type SanitizedBookmark = {
@@ -68,9 +82,6 @@ class AiRequestError extends Error {
 
 export async function POST(request: Request) {
   const apiKey = process.env.ZHIPU_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json({ error: "AI 接口未配置，请联系管理员补充 API Key" }, { status: 500 });
-  }
 
   let payload: AiOrganizeRequestPayload;
   try {
@@ -95,12 +106,30 @@ export async function POST(request: Request) {
 
   const strategyLabel = getStrategyDisplayName(strategy);
   const locale = typeof payload?.locale === "string" && payload.locale.trim() ? payload.locale.trim() : "zh-CN";
+  const normalizedThemes = normalizeThemes(payload?.themes);
+
+  if (strategy === "domain-groups") {
+    const result = buildDomainGroupingPlan(sanitizedBookmarks, strategyLabel, locale);
+    return NextResponse.json(result);
+  }
+
+  if (strategy === "alphabetical") {
+    const result = buildAlphabeticalPlan(sanitizedBookmarks, strategyLabel, locale);
+    return NextResponse.json(result);
+  }
+
+  const semanticThemes = normalizedThemes.length > 0 ? normalizedThemes : DEFAULT_SEMANTIC_THEMES;
+
+  if (!apiKey) {
+    return NextResponse.json({ error: "AI 接口未配置，请联系管理员补充 API Key" }, { status: 500 });
+  }
 
   const job = createAiOrganizeJob({
     strategy,
     strategyLabel,
     locale,
     totalBookmarks: sanitizedBookmarks.length,
+    themes: semanticThemes,
   });
 
   launchAiOrganizeJob(job.id, {
@@ -109,11 +138,12 @@ export async function POST(request: Request) {
     strategyLabel,
     locale,
     bookmarks: sanitizedBookmarks,
+    themes: semanticThemes,
   });
 
   const response: AiOrganizeJobResponse & { message: string } = {
     job,
-    message: "AI 整理任务已在后台启动，请稍后刷新任务状态或手动停止。",
+    message: "已创建语义主题整理任务，请稍后刷新任务状态或手动停止。",
   };
 
   return NextResponse.json(response, { status: 202 });
@@ -125,6 +155,7 @@ type LaunchContext = {
   strategyLabel: string;
   locale: string;
   bookmarks: SanitizedBookmark[];
+  themes: string[];
 };
 
 function launchAiOrganizeJob(jobId: string, context: LaunchContext): void {
@@ -162,6 +193,7 @@ function launchAiOrganizeJob(jobId: string, context: LaunchContext): void {
         strategyLabel: context.strategyLabel,
         locale: context.locale,
         bookmarks: context.bookmarks,
+        themes: context.themes,
         abortSignal: controller.signal,
       });
 
@@ -230,6 +262,7 @@ async function generateAiPlan({
   strategyLabel,
   locale,
   bookmarks,
+  themes,
   abortSignal,
 }: {
   apiKey: string;
@@ -237,6 +270,7 @@ async function generateAiPlan({
   strategyLabel: string;
   locale: string;
   bookmarks: SanitizedBookmark[];
+  themes: string[];
   abortSignal?: AbortSignal;
 }): Promise<AiOrganizeResponsePayload> {
   let lastError: Error | null = null;
@@ -253,8 +287,9 @@ async function generateAiPlan({
       digest,
       digestOptions,
       attempt,
+      themes,
     });
-    const messages = buildMessages(strategy, userPrompt, attempt);
+    const messages = buildMessages(strategy, userPrompt, attempt, themes);
 
     try {
       const { rawContent, usage } = await requestAiCompletion({ apiKey, messages, abortSignal });
@@ -332,12 +367,16 @@ async function requestAiCompletion({
   }
 }
 
-function buildMessages(strategy: AiStrategyId, userPrompt: string, attempt: number): ChatMessage[] {
+function buildMessages(strategy: AiStrategyId, userPrompt: string, attempt: number, themes: string[]): ChatMessage[] {
   const strategyInstruction = STRATEGY_INSTRUCTIONS[strategy] ?? "";
+  const themeInstruction =
+    strategy === "semantic-clusters" && themes.length > 0
+      ? `- 仅使用以下主题名称作为分组：${themes.join("、")}。若没有合适的主题，请放入“其他收藏”。\n`
+      : "";
   const systemPrompt =
     attempt > 0
-      ? `${BASE_SYSTEM_PROMPT}${strategyInstruction}${RETRY_SYSTEM_SUFFIX}`
-      : `${BASE_SYSTEM_PROMPT}${strategyInstruction}`;
+      ? `${BASE_SYSTEM_PROMPT}${strategyInstruction}${themeInstruction}${RETRY_SYSTEM_SUFFIX}`
+      : `${BASE_SYSTEM_PROMPT}${strategyInstruction}${themeInstruction}`;
 
   return [
     { role: "system", content: systemPrompt },
@@ -352,6 +391,7 @@ function buildUserPrompt({
   digest,
   digestOptions,
   attempt,
+  themes,
 }: {
   strategyLabel: string;
   locale: string;
@@ -359,6 +399,7 @@ function buildUserPrompt({
   digest: string;
   digestOptions: DigestFormattingOptions;
   attempt: number;
+  themes: string[];
 }): string {
   const fieldsDescription = describeDigestOptions(digestOptions);
   const attemptWarning =
@@ -366,11 +407,17 @@ function buildUserPrompt({
       ? "⚠️ 上一次的 JSON 无法解析，请严格按照上述类型重新输出合法 JSON，仅保留必要字段，newName 仅在确有需要时提供。"
       : null;
 
+  const themeInstruction =
+    themes.length > 0
+      ? `仅使用以下主题名称进行分组，若无匹配请放入“其他收藏”：${themes.join("、")}`
+      : null;
+
   const sections = [
     `请依据“${strategyLabel}”策略整理以下 ${count} 条书签。`,
     "务必将每个书签放入某个分组，可在必要时提供 newName 以提升可读性。",
     `输出语言保持 ${locale}，仅返回 JSON。`,
     attemptWarning,
+    themeInstruction,
     `书签列表（${fieldsDescription}）：`,
     digest,
   ].filter(Boolean);
@@ -430,53 +477,6 @@ function formatUrlForDigest(url: string, maxLength: number): string {
   return truncateDigestField(normalized, maxLength);
 }
 
-function isRetryableAiError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-  const message = error.message ?? "";
-  return (
-    message.includes("JSON") ||
-    message.includes("结构不正确") ||
-    message.includes("分组结果") ||
-    message.includes("返回内容为空") ||
-    message.includes("返回数据格式不正确")
-  );
-}
-
-function isValidStrategy(value: unknown): value is AiStrategyId {
-  return value === "domain-groups" || value === "semantic-clusters" || value === "alphabetical";
-}
-
-type RawBookmark = AiOrganizeRequestPayload["bookmarks"][number];
-
-function sanitizeBookmark(bookmark: RawBookmark | undefined): SanitizedBookmark | null {
-  if (!bookmark || typeof bookmark !== "object") {
-    return null;
-  }
-  const id = typeof bookmark.id === "string" ? bookmark.id.trim() : "";
-  if (!id) {
-    return null;
-  }
-  const name = typeof bookmark.name === "string" && bookmark.name.trim() ? bookmark.name.trim() : "未命名网页";
-  const url = typeof bookmark.url === "string" && bookmark.url.trim() ? bookmark.url.trim() : undefined;
-  const domain = typeof bookmark.domain === "string" && bookmark.domain.trim() ? bookmark.domain.trim() : undefined;
-  const trail = typeof bookmark.trail === "string" && bookmark.trail.trim() ? bookmark.trail.trim() : undefined;
-  const parentFolderName =
-    typeof bookmark.parentFolderName === "string" && bookmark.parentFolderName.trim()
-      ? bookmark.parentFolderName.trim()
-      : undefined;
-
-  return {
-    id,
-    name,
-    url,
-    domain,
-    trail,
-    parentFolderName,
-  };
-}
-
 function formatBookmarkDigest(
   bookmark: SanitizedBookmark,
   index: number,
@@ -499,6 +499,175 @@ function formatBookmarkDigest(
     parts.push(`trail=${truncateDigestField(bookmark.trail, options.maxFieldLength)}`);
   }
   return parts.join("；");
+}
+
+function buildDomainGroupingPlan(
+  bookmarks: SanitizedBookmark[],
+  strategyLabel: string,
+  locale: string,
+): AiOrganizeResponsePayload {
+  const groupsMap = new Map<string, { title: string; bookmarks: AiPlanBookmark[] }>();
+  const nameLookup = new Map(bookmarks.map((bookmark) => [bookmark.id, bookmark.name]));
+
+  for (const bookmark of bookmarks) {
+    const rawDomain = bookmark.domain || (bookmark.url ? extractHostname(bookmark.url) : "") || DOMAIN_FALLBACK_GROUP;
+    const normalizedDomain = rawDomain === DOMAIN_FALLBACK_GROUP ? DOMAIN_FALLBACK_GROUP : rawDomain.trim().toLowerCase();
+    const groupKey = normalizedDomain;
+    const groupTitle = normalizedDomain;
+    const existing = groupsMap.get(groupKey);
+    const entry: AiPlanBookmark = { id: bookmark.id };
+    if (existing) {
+      existing.bookmarks.push(entry);
+    } else {
+      groupsMap.set(groupKey, {
+        title: groupTitle,
+        bookmarks: [entry],
+      });
+    }
+  }
+
+  const sortedGroups = Array.from(groupsMap.values()).sort((a, b) => {
+    if (a.title === DOMAIN_FALLBACK_GROUP) return 1;
+    if (b.title === DOMAIN_FALLBACK_GROUP) return -1;
+    const sizeDiff = b.bookmarks.length - a.bookmarks.length;
+    if (sizeDiff !== 0) {
+      return sizeDiff;
+    }
+    return a.title.localeCompare(b.title, locale, { sensitivity: "base" });
+  });
+
+  const planGroups: AiPlanGroup[] = sortedGroups.map((group) => {
+    const sortedBookmarks = [...group.bookmarks].sort((a, b) => {
+      const nameA = nameLookup.get(a.id) ?? '';
+      const nameB = nameLookup.get(b.id) ?? '';
+      return nameA.localeCompare(nameB, locale, { sensitivity: 'base' });
+    });
+    return {
+      name: group.title,
+      bookmarks: sortedBookmarks,
+    };
+  });
+
+  const plan: AiPlanResult = {
+    folderTitle: `${strategyLabel} · ${formatFolderTimestamp(new Date())}`,
+    summary: `已依据域名创建 ${planGroups.length} 个分组。`,
+    groups: planGroups,
+  };
+
+  return { plan };
+}
+
+function buildAlphabeticalPlan(
+  bookmarks: SanitizedBookmark[],
+  strategyLabel: string,
+  locale: string,
+): AiOrganizeResponsePayload {
+  const letterBuckets = new Map<string, AiPlanBookmark[]>();
+  const nameLookup = new Map(bookmarks.map((bookmark) => [bookmark.id, bookmark.name]));
+
+  for (const bookmark of bookmarks) {
+    const name = bookmark.name || "未命名网页";
+    const letter = getAlphabetKey(name);
+    if (!letterBuckets.has(letter)) {
+      letterBuckets.set(letter, []);
+    }
+    letterBuckets.get(letter)?.push({ id: bookmark.id });
+  }
+
+  const sortedKeys = Array.from(letterBuckets.keys()).sort((a, b) => {
+    if (a === "#") return 1;
+    if (b === "#") return -1;
+    return a.localeCompare(b, locale, { sensitivity: "base" });
+  });
+
+  const planGroups: AiPlanGroup[] = sortedKeys
+    .map((key) => {
+      const bucket = letterBuckets.get(key) ?? [];
+      const sortedBookmarks = bucket
+        .slice()
+        .sort((a, b) => {
+          const nameA = nameLookup.get(a.id) ?? '';
+          const nameB = nameLookup.get(b.id) ?? '';
+          return nameA.localeCompare(nameB, locale, { sensitivity: 'base' });
+        });
+
+      return {
+        name: key === '#' ? '其他字符' : `${key} 开头`,
+        bookmarks: sortedBookmarks,
+      };
+    })
+    .filter((group) => group.bookmarks.length > 0);
+
+  const plan: AiPlanResult = {
+    folderTitle: `${strategyLabel} · ${formatFolderTimestamp(new Date())}`,
+    summary: `已按字母顺序整理 ${planGroups.length} 个目录。`,
+    groups: planGroups,
+  };
+
+  return { plan };
+}
+
+function normalizeThemes(themes: unknown): string[] {
+  if (!Array.isArray(themes)) {
+    return [];
+  }
+  const unique = new Set<string>();
+  for (const raw of themes) {
+    if (typeof raw !== "string") continue;
+    const trimmed = raw.trim();
+    if (trimmed) {
+      unique.add(trimmed);
+    }
+  }
+  return Array.from(unique).slice(0, 24);
+}
+
+function getAlphabetKey(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    return "#";
+  }
+  const firstChar = trimmed[0];
+  const upper = firstChar.toUpperCase();
+  if (LETTERS.includes(upper)) {
+    return upper;
+  }
+  const pinyinResult = pinyin(firstChar, { pattern: "first", toneType: "none" });
+  if (pinyinResult) {
+    const letter = pinyinResult[0]?.toUpperCase();
+    if (letter && LETTERS.includes(letter)) {
+      return letter;
+    }
+  }
+  return "#";
+}
+
+function sanitizeBookmark(bookmark: unknown): SanitizedBookmark | null {
+  if (!bookmark || typeof bookmark !== "object") {
+    return null;
+  }
+  const payload = bookmark as Record<string, unknown>;
+  const id = typeof payload.id === "string" ? payload.id.trim() : "";
+  if (!id) {
+    return null;
+  }
+  const name = typeof payload.name === "string" && payload.name.trim() ? payload.name.trim() : "未命名网页";
+  const url = typeof payload.url === "string" && payload.url.trim() ? payload.url.trim() : undefined;
+  const domain = typeof payload.domain === "string" && payload.domain.trim() ? payload.domain.trim() : undefined;
+  const trail = typeof payload.trail === "string" && payload.trail.trim() ? payload.trail.trim() : undefined;
+  const parentFolderName =
+    typeof payload.parentFolderName === "string" && payload.parentFolderName.trim()
+      ? payload.parentFolderName.trim()
+      : undefined;
+
+  return {
+    id,
+    name,
+    url,
+    domain,
+    trail,
+    parentFolderName,
+  };
 }
 
 async function safeReadJson(response: Response): Promise<unknown> {
@@ -721,6 +890,20 @@ function mergeAbortSignals(signals: Array<AbortSignal | undefined | null>):
   return { signal: controller.signal, disconnect };
 }
 
+function isRetryableAiError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message ?? "";
+  return (
+    message.includes("JSON") ||
+    message.includes("结构不正确") ||
+    message.includes("分组结果") ||
+    message.includes("返回内容为空") ||
+    message.includes("返回数据格式不正确")
+  );
+}
+
 function isAbortError(error: unknown): error is Error {
   if (!(error instanceof Error)) {
     return false;
@@ -741,5 +924,25 @@ function throwIfAborted(signal: AbortSignal | undefined) {
     const abortError = new Error("The operation was aborted");
     abortError.name = "AbortError";
     throw abortError;
+  }
+}
+
+function isValidStrategy(value: unknown): value is AiStrategyId {
+  return value === "domain-groups" || value === "semantic-clusters" || value === "alphabetical";
+}
+
+function formatFolderTimestamp(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function extractHostname(url: string): string {
+  try {
+    const { hostname } = new URL(url);
+    return hostname.replace(/^www\./, "");
+  } catch {
+    return url;
   }
 }
