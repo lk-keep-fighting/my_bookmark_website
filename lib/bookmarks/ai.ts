@@ -29,6 +29,7 @@ export interface AiOrganizeRequestPayload {
   strategy: AiStrategyId;
   bookmarks: AiBookmarkDigest[];
   locale?: string;
+  themes?: string[];
 }
 
 export interface AiOrganizeResponsePayload {
@@ -39,6 +40,29 @@ export interface AiOrganizeResponsePayload {
     completionTokens?: number;
     totalTokens?: number;
   };
+}
+
+export type AiOrganizeJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
+
+export interface AiOrganizeJobSnapshot {
+  id: string;
+  status: AiOrganizeJobStatus;
+  strategy: AiStrategyId;
+  strategyLabel: string;
+  locale: string;
+  totalBookmarks: number;
+  cancelRequested: boolean;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  result?: AiOrganizeResponsePayload;
+  error?: string;
+  themes?: string[];
+}
+
+export interface AiOrganizeJobResponse {
+  job: AiOrganizeJobSnapshot;
 }
 
 const STRATEGY_DISPLAY_NAMES: Record<AiStrategyId, string> = {
