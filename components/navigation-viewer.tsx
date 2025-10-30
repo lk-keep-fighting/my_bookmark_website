@@ -14,6 +14,8 @@ import type {
 } from '@/lib/bookmarks/ai';
 import { getStrategyDisplayName } from '@/lib/bookmarks/ai';
 
+const AI_FEATURE_AVAILABLE = false;
+
 interface NavigationViewerProps {
   document: BookmarkDocument | null;
   emptyHint?: string;
@@ -185,10 +187,10 @@ export function NavigationViewer({
   const previousRootIdRef = useRef<string | null>(null);
   const folderRenameInputRef = useRef<HTMLInputElement | null>(null);
 
-  const jobInProgress = Boolean(
+  const jobInProgress = AI_FEATURE_AVAILABLE && Boolean(
     activeAiJob && (activeAiJob.status === 'pending' || activeAiJob.status === 'running'),
   );
-  const isAiBusy = isApplyingAi || isCheckingAiJob || jobInProgress;
+  const isAiBusy = AI_FEATURE_AVAILABLE ? isApplyingAi || isCheckingAiJob || jobInProgress : false;
 
   const semanticThemesForPayload = useMemo(() => {
     const unique = new Set<string>();
@@ -368,6 +370,9 @@ export function NavigationViewer({
   );
 
   useEffect(() => {
+    if (!AI_FEATURE_AVAILABLE) {
+      return;
+    }
     if (!activeAiJob) {
       return;
     }
@@ -665,6 +670,12 @@ export function NavigationViewer({
 
   const handleApplyAiStrategy = useCallback(
     async (strategyId: AiStrategyId) => {
+      if (!AI_FEATURE_AVAILABLE) {
+        setAiError(null);
+        setAiMessage('AI 自动整理功能已暂时下线，敬请期待更新。');
+        setIsAiPanelOpen(false);
+        return;
+      }
       if (!editable || !bookmarkDocument) {
         return;
       }
@@ -775,7 +786,7 @@ export function NavigationViewer({
 
   const handleToggleSemanticTheme = useCallback(
     (theme: string) => {
-      if (isAiBusy) {
+      if (!AI_FEATURE_AVAILABLE || isAiBusy) {
         return;
       }
       setSelectedSemanticThemes((previous) => {
@@ -790,7 +801,7 @@ export function NavigationViewer({
   );
 
   const handleAddSemanticThemes = useCallback(() => {
-    if (isAiBusy) {
+    if (!AI_FEATURE_AVAILABLE || isAiBusy) {
       return;
     }
     const candidates = semanticThemeInput
@@ -822,13 +833,17 @@ export function NavigationViewer({
   }, [semanticThemeInput, isAiBusy]);
 
   const handleRemoveCustomTheme = useCallback((theme: string) => {
-    if (isAiBusy) {
+    if (!AI_FEATURE_AVAILABLE || isAiBusy) {
       return;
     }
     setSemanticCustomThemes((previous) => previous.filter((item) => item !== theme));
   }, [isAiBusy]);
 
   const handleRefreshAiJob = useCallback(async () => {
+    if (!AI_FEATURE_AVAILABLE) {
+      setAiError('AI 自动整理功能已暂时下线，无法刷新任务状态');
+      return;
+    }
     if (!activeAiJob) {
       setAiError('当前没有正在执行的 AI 任务');
       return;
@@ -871,6 +886,10 @@ export function NavigationViewer({
   }, [activeAiJob]);
 
   const handleCancelAiJob = useCallback(async () => {
+    if (!AI_FEATURE_AVAILABLE) {
+      setAiError('AI 自动整理功能已暂时下线，无需停止任务');
+      return;
+    }
     if (!activeAiJob) {
       setAiError('当前没有正在执行的 AI 任务');
       return;
@@ -1106,17 +1125,20 @@ export function NavigationViewer({
                   </span>
                 )}
               </div>
+              {!AI_FEATURE_AVAILABLE && (
+                <div style={aiDisabledNoticeStyle}>AI 自动整理功能已暂时下线，我们正在加紧优化，敬请期待更新。</div>
+              )}
               <div style={aiStrategyListStyle}>
                 {AI_STRATEGIES.map((strategy) => (
                   <button
                     key={strategy.id}
                     type="button"
                     onClick={() => handleApplyAiStrategy(strategy.id)}
-                    disabled={isAiBusy}
+                    disabled={!AI_FEATURE_AVAILABLE || isAiBusy}
                     style={{
                       ...aiStrategyButtonStyle,
-                      opacity: isAiBusy ? 0.55 : 1,
-                      cursor: isAiBusy ? 'not-allowed' : 'pointer',
+                      opacity: !AI_FEATURE_AVAILABLE || isAiBusy ? 0.55 : 1,
+                      cursor: !AI_FEATURE_AVAILABLE || isAiBusy ? 'not-allowed' : 'pointer',
                     }}
                   >
                     <div style={aiStrategyTitleStyle}>{strategy.title}</div>
@@ -1138,14 +1160,14 @@ export function NavigationViewer({
                         key={theme}
                         type="button"
                         onClick={() => handleToggleSemanticTheme(theme)}
-                        disabled={isAiBusy}
+                        disabled={!AI_FEATURE_AVAILABLE || isAiBusy}
                         style={{
                           ...aiThemePresetButtonStyle,
                           background: selected ? 'rgba(59, 130, 246, 0.16)' : 'rgba(255, 255, 255, 0.85)',
                           borderColor: selected ? 'rgba(59, 130, 246, 0.45)' : 'rgba(148, 163, 184, 0.4)',
                           color: selected ? '#1d4ed8' : '#1f2937',
-                          opacity: isAiBusy ? 0.6 : 1,
-                          cursor: isAiBusy ? 'not-allowed' : 'pointer',
+                          opacity: !AI_FEATURE_AVAILABLE || isAiBusy ? 0.6 : 1,
+                          cursor: !AI_FEATURE_AVAILABLE || isAiBusy ? 'not-allowed' : 'pointer',
                         }}
                       >
                         {selected ? '✓ ' : ''}
@@ -1167,19 +1189,20 @@ export function NavigationViewer({
                     placeholder="自定义主题，使用逗号或换行分隔"
                     style={{
                       ...aiThemeInputStyle,
-                      background: isAiBusy ? 'rgba(248, 250, 252, 0.8)' : aiThemeInputStyle.background,
+                      background: !AI_FEATURE_AVAILABLE || isAiBusy ? 'rgba(248, 250, 252, 0.8)' : aiThemeInputStyle.background,
                     }}
-                    disabled={isAiBusy}
+                    disabled={!AI_FEATURE_AVAILABLE || isAiBusy}
                   />
                   <button
                     type="button"
                     onClick={handleAddSemanticThemes}
                     style={{
                       ...aiThemeAddButtonStyle,
-                      opacity: isAiBusy || !semanticThemeInput.trim() ? 0.6 : 1,
-                      cursor: isAiBusy || !semanticThemeInput.trim() ? 'not-allowed' : 'pointer',
+                      opacity: !AI_FEATURE_AVAILABLE || isAiBusy || !semanticThemeInput.trim() ? 0.6 : 1,
+                      cursor:
+                        !AI_FEATURE_AVAILABLE || isAiBusy || !semanticThemeInput.trim() ? 'not-allowed' : 'pointer',
                     }}
-                    disabled={isAiBusy || !semanticThemeInput.trim()}
+                    disabled={!AI_FEATURE_AVAILABLE || isAiBusy || !semanticThemeInput.trim()}
                   >
                     添加
                   </button>
@@ -1198,11 +1221,11 @@ export function NavigationViewer({
                               onClick={() => handleRemoveCustomTheme(theme)}
                               style={{
                                 ...aiThemeChipRemoveButtonStyle,
-                                opacity: isAiBusy ? 0.6 : 1,
-                                cursor: isAiBusy ? 'not-allowed' : 'pointer',
+                                opacity: !AI_FEATURE_AVAILABLE || isAiBusy ? 0.6 : 1,
+                                cursor: !AI_FEATURE_AVAILABLE || isAiBusy ? 'not-allowed' : 'pointer',
                               }}
                               aria-label={`移除 ${theme}`}
-                              disabled={isAiBusy}
+                              disabled={!AI_FEATURE_AVAILABLE || isAiBusy}
                             >
                               ×
                             </button>
@@ -2404,6 +2427,16 @@ const aiStrategyTitleStyle: React.CSSProperties = {
 const aiStrategyDescriptionStyle: React.CSSProperties = {
   fontSize: '13px',
   color: '#475569',
+};
+
+const aiDisabledNoticeStyle: React.CSSProperties = {
+  padding: '12px 14px',
+  borderRadius: '12px',
+  background: 'rgba(248, 250, 252, 0.9)',
+  border: '1px dashed rgba(148, 163, 184, 0.6)',
+  color: '#475569',
+  fontSize: '13px',
+  lineHeight: 1.6,
 };
 
 const aiThemeSectionStyle: React.CSSProperties = {
