@@ -1,4 +1,5 @@
 export * from "./types";
+export * from "./ai";
 export { parseBookmarksHtml } from "./parser";
 export { bookmarkDocumentToHtml } from "./export";
 export { calculateBookmarkStatistics } from "./statistics";
