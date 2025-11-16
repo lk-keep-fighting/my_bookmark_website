@@ -1246,15 +1246,13 @@ async function resolveAccessToken() {
 
       if (target?.value) {
         const decoded = decodeCookieValue(target.value);
-        try {
-          const parsed = JSON.parse(decoded);
-          const token = typeof parsed?.access_token === "string" ? parsed.access_token : null;
-          state.lastAccessToken = token ?? null;
-          resolve(token ?? null);
+        const token = extractAccessTokenFromCookieValue(decoded);
+        if (token) {
+          state.lastAccessToken = token;
+          resolve(token);
           return;
-        } catch (error) {
-          console.warn("解析 Supabase 会话失败", error);
         }
+        console.debug("未能从 Supabase 会话 Cookie 中提取访问令牌");
       }
 
       state.lastAccessToken = null;
@@ -1271,6 +1269,114 @@ function decodeCookieValue(value) {
     return decodeURIComponent(value);
   } catch {
     return value;
+  }
+}
+
+function extractAccessTokenFromCookieValue(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const parsed = tryParseJson(trimmed);
+  if (parsed && typeof parsed === "object" && parsed !== null) {
+    const tokenFromParsed = extractAccessTokenFromUnknown(parsed);
+    if (tokenFromParsed) {
+      return tokenFromParsed;
+    }
+  }
+
+  return trimmed.includes(".") ? trimmed : null;
+}
+
+function extractAccessTokenFromUnknown(value, visited = new WeakSet(), depth = 0) {
+  if (value === null || typeof value === "undefined" || depth > 8) {
+    return null;
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const parsed = tryParseJson(trimmed);
+    if (parsed && typeof parsed === "object") {
+      const nested = extractAccessTokenFromUnknown(parsed, visited, depth + 1);
+      if (nested) {
+        return nested;
+      }
+    }
+
+    return trimmed.includes(".") ? trimmed : null;
+  }
+
+  if (typeof value !== "object") {
+    return null;
+  }
+
+  if (visited.has(value)) {
+    return null;
+  }
+  visited.add(value);
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const token = extractAccessTokenFromUnknown(item, visited, depth + 1);
+      if (token) {
+        return token;
+      }
+    }
+    return null;
+  }
+
+  const directKeys = ["access_token", "accessToken", "token", "currentAccessToken", "bearerToken"];
+  for (const key of directKeys) {
+    const candidate = value[key];
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+
+  const nestedCandidates = [
+    value.currentSession,
+    value.session,
+    value.persistedSession,
+    value.persisted_session,
+    value.data,
+    value.session_data,
+    value.auth,
+  ];
+
+  for (const candidate of nestedCandidates) {
+    const token = extractAccessTokenFromUnknown(candidate, visited, depth + 1);
+    if (token) {
+      return token;
+    }
+  }
+
+  for (const nestedValue of Object.values(value)) {
+    const token = extractAccessTokenFromUnknown(nestedValue, visited, depth + 1);
+    if (token) {
+      return token;
+    }
+  }
+
+  return null;
+}
+
+function tryParseJson(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
   }
 }
 
